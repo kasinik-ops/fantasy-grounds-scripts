@@ -1,17 +1,24 @@
 Overview
-This repo is for scripts for Fantasy grounds. it is intended for my personal use but you are welcome to use them as you see fit.
+This repo is for scripts for Fantasy grounds. it is intended for my personal use but you are welcome to use them as you see fit. They have NO WARRANTY.
 
-It currently has two scripts.
 
-fgu_maptest.py 
+**fgu_maptest.py**
+
 This script checks map files for issues which may cause performance issues and gives recommendations. It is read-only. Example outout is in the image in this repo.
 
-fix_fantasygrounds.sh
+**fgu_telemetry.py**
+
+This script captures Mac OS X system telemetry to help analysing map performance. It was used to generate the heuristics on map performance used in fgu_maptest.py
+
+**fgu_telemetry_analyze.py**
+
+This analyses the telemetry captured by fgu_telemetry.py
+
+**fix_fantasygrounds.sh**
+
 This script is a maintenance tool designed to resolve persistent crashing, update, and preference issues for Fantasy Grounds Unity on macOS. It performs a "Deep Clean" by purging memory-cached preferences and re-installing the application.
 
-Data Safety: The script creates a backup in `~/FGBACKUP`. However, always maintain a secondary manual backup of your `campaigns` folder.
-
-No warranty is implied for this script. Backing up your campaigns is YOUR responsibility.
+Data Safety: The script creates a backup in `~/FGBACKUP`. However, always maintain a secondary manual backup of your `campaigns` folder. Backing up your campaigns is YOUR responsibility.
 
 Key Issues Addressed
 This script specifically targets the following known macOS-specific problems:
