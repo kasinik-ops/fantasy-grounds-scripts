@@ -26,9 +26,10 @@ set -euo pipefail
 ################################################################################
 # 
 # SUMMARY OF ACTION:
-# 1. Backs up your Fantasy Grounds data (campaigns, modules, etc.) to $HOME/FGBACKUP.
-# 2. WILL PERMANENTLY DELETE your Fantasy Grounds preferences (plist and conf files).
-# 3. WILL DELETE the application and data directories to perform a clean wipe.
+# 1. Offers simple reboot or permission-fix steps first.
+# 2. Backs up your Fantasy Grounds data (campaigns, modules, etc.) to $HOME/FGBACKUP.
+# 3. WILL PERMANENTLY DELETE your Fantasy Grounds preferences (plist and conf files).
+# 4. WILL DELETE the application and data directories to perform a clean wipe.
 ################################################################################
 
 # Function to display status messages
@@ -41,10 +42,75 @@ function error_exit() {
     exit 1
 }
 
-# Initial Warning
-echo -e "\033[1;31mWARNING: This script will wipe Fantasy Grounds preferences and directories.\033[0m"
-echo "It will attempt to backup your campaigns and assets first."
-read -p "Are you sure you want to proceed? (Type 'YES' to continue): " confirmation
+# Function to safely handle user-initiated reboot
+function prompt_reboot() {
+    read -p "Would you like to reboot your Mac now? (y/N): " reboot_choice
+    case "$reboot_choice" in
+        [Yy]* )
+            echo "Rebooting system..."
+            sudo shutdown -r now
+            ;;
+        * )
+            echo "Skipping reboot. Please restart manually when ready."
+            ;;
+    esac
+}
+
+# Step 0: Non-Destructive Troubleshooting First
+status_message "Initial Assessment: Quick Fix Recommendations"
+echo "Before wiping your installation, it is recommended to try these simpler fixes:"
+echo "1) Simply reboot your Mac."
+echo "2) Repair Fantasy Grounds file permissions and reboot."
+echo "3) Full clean reset:"
+echo "   - Backs up your data (campaigns, modules, tokens) to $HOME/FGBACKUP"
+echo "   - Purges RAM-cached preferences (cfprefsd) using 'defaults delete'"
+echo "   - Deletes .plist & .conf files to reset resolution, UI, and login states"
+echo "   - Completely removes app folders and reinstalls Fantasy Grounds"
+echo ""
+read -p "Choose an option (1, 2, or 3): " initial_option
+
+case "$initial_option" in
+    1)
+        echo "A simple reboot often resolves memory-caching and process-lock issues."
+        prompt_reboot
+        exit 0
+        ;;
+    2)
+        status_message "Attempting to fix executable permissions..."
+        FG_APP="/Applications/SmiteWorks/Fantasy Grounds/FantasyGrounds.app"
+        FG_UPDATER="/Applications/SmiteWorks/Fantasy Grounds/FantasyGroundsUpdater.app"
+
+        if [ -d "$FG_APP" ] || [ -d "$FG_UPDATER" ]; then
+            sudo chmod -R +x "$FG_APP" 2>/dev/null || true
+            sudo chmod -R +x "$FG_UPDATER" 2>/dev/null || true
+            echo "Permissions updated successfully."
+            echo "It is recommended to reboot now to test if this resolves your issue."
+            prompt_reboot
+            exit 0
+        else
+            echo "Fantasy Grounds application folders not found at default paths."
+            read -p "Press Enter to proceed to the full reset..." unused_var
+        fi
+        ;;
+    3)
+        echo "Proceeding to full wipe and reinstall..."
+        ;;
+    *)
+        echo "Invalid option. Aborting."
+        exit 1
+        ;;
+esac
+
+# Initial Warning for Full Reset
+echo ""
+echo -e "\033[1;31m========================================================================\033[0m"
+echo -e "\033[1;31mWARNING: THIS PROCESS WILL DELETE FANTASY GROUNDS PREFERENCES & DATA!\033[0m"
+echo -e "\033[1;31m========================================================================\033[0m"
+echo "While this script attempts an automated backup, IT IS SOLELY YOUR RESPONSIBILITY"
+echo "to ensure that your data—ESPECIALLY YOUR FANTASY GROUNDS CAMPAIGN FOLDER—is safely"
+echo "backed up to an external location before proceeding."
+echo ""
+read -p "Have you verified your backups and wish to proceed with a full wipe? (Type 'YES' to continue): " confirmation
 
 if [ "$confirmation" != "YES" ]; then
     echo "Aborting script."
@@ -57,15 +123,15 @@ BACKUP_ROOT="$HOME/FGBACKUP"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_DIR="$BACKUP_ROOT/backup_$TIMESTAMP"
 
-# Step 0: Dependency Check
-status_message "Step 0: Checking system dependencies..."
+# Step 1: Dependency Check
+status_message "Step 1: Checking system dependencies..."
 for cmd in curl installer mktemp defaults; do
     command -v $cmd >/dev/null 2>&1 || error_exit "$cmd is not installed. Please install it and try again."
 done
 
-# Step 1: Secure Backup
+# Step 2: Backup
 if [ -d "$SRC_DIR" ]; then
-    status_message "Step 1: Creating a secure backup of your Fantasy Grounds data..."
+    status_message "Step 2: Creating a backup of your Fantasy Grounds data..."
     
     # Check disk space (approximate)
     available_space=$(df "$HOME" | awk 'NR==2 {print $4}')
@@ -73,13 +139,13 @@ if [ -d "$SRC_DIR" ]; then
         echo "Warning: Disk space is low. Backup might fail."
     fi
 
-    mkdir -p "$BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR" || error_exit "Failed to create backup directory $BACKUP_DIR. Aborting script to protect your data."
 
     SUBDIRS=("campaigns" "extensions" "modules" "portraits" "tokens")
     for subdir in "${SUBDIRS[@]}"; do
         if [ -d "$SRC_DIR/$subdir" ]; then
             echo "Copying $subdir..."
-            cp -R "$SRC_DIR/$subdir" "$BACKUP_DIR/" || error_exit "Failed to copy $subdir. Aborting to prevent data loss."
+            cp -R "$SRC_DIR/$subdir" "$BACKUP_DIR/" || error_exit "Backup failed while copying '$subdir'. Aborting script to prevent potential data loss."
         else
             echo "$subdir not found, skipping."
         fi
@@ -90,8 +156,8 @@ else
     status_message "SmiteWorks/Fantasy Grounds directory not found. Nothing to backup."
 fi
 
-# Step 2: Preference Cleanup (plist)
-status_message "Step 2: Removing plist files (memory and disk)..."
+# Step 3: Preference Cleanup (plist)
+status_message "Step 3: Removing plist files (memory and disk)..."
 PLIST_FILES=(
     "unity.SmiteWorks.Fantasy Grounds"
     "unity.SmiteWorks.Fantasy Grounds Updater"
@@ -108,8 +174,8 @@ for plist in "${PLIST_FILES[@]}"; do
     fi
 done
 
-# Step 3: Config File Cleanup
-status_message "Step 3: Removing configuration files..."
+# Step 4: Config File Cleanup
+status_message "Step 4: Removing configuration files..."
 CONFIG_FILES=(
     "/Library/Preferences/SmiteWorks/fantasygrounds.conf"
     "$HOME/Library/Preferences/SmiteWorks/fantasygrounds.conf"
@@ -119,7 +185,7 @@ CONFIG_FILES=(
 
 for config in "${CONFIG_FILES[@]}"; do
     if [ -f "$config" ]; then
-        if [[ "$config" == "/Library/Preferences/SmiteWorks/"* ]]; then
+        if [[ "$config" == "$HOME/Library/Preferences/SmiteWorks/"* ]]; then
             rm -f "$config" && echo "Deleted $config"
         else
             # Only use sudo if path is system-level
@@ -128,8 +194,8 @@ for config in "${CONFIG_FILES[@]}"; do
     fi
 done
 
-# Step 4: Directory Wipe
-status_message "Step 4: Removing application directories..."
+# Step 5: Directory Wipe
+status_message "Step 5: Removing application directories..."
 DIRS_TO_REMOVE=(
     "$HOME/SmiteWorks"
     "/Applications/SmiteWorks"
@@ -146,8 +212,8 @@ for dir in "${DIRS_TO_REMOVE[@]}"; do
     fi
 done
 
-# Step 5: Install and Finish
-status_message "Step 5: Downloading and Reinstalling..."
+# Step 6: Install and Finish
+status_message "Step 6: Downloading and Reinstalling..."
 INSTALLER_URL="https://www.fantasygrounds.com/filelibrary/FGUWebInstall.pkg"
 INSTALLER_PATH=$(mktemp /tmp/FGUInstall.XXXXXX.pkg)
 
@@ -163,3 +229,5 @@ echo "-----------------------------------------------------------"
 echo -e "\033[1;32mPROCESS COMPLETE.\033[0m"
 echo -e "\033[1;33mCRITICAL: You MUST reboot your Mac now before opening Fantasy Grounds.\033[0m"
 echo "-----------------------------------------------------------"
+
+prompt_reboot
