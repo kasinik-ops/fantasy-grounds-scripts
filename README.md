@@ -1,10 +1,12 @@
 Overview
 This repo is for scripts for Fantasy grounds. it is intended for my personal use but you are welcome to use them as you see fit. They have NO WARRANTY.
 
+Claude (sonnet 5 and opus 4.8 extra) and Gemini (3.1 pro, 3.5 flash, 3.6 flash) were used to develop the scripts. They were lightly code reviewed by a human.
+
 
 **fgu_maptest.py**
 
-This script checks map files for issues which may cause performance issues and gives recommendations. It is read-only. Example outout is in the image in this repo.
+This script checks map files for issues which may cause performance issues and gives recommendations. It is read-only. Example output is in the image in this repo.
 
 **fgu_telemetry.py**
 
