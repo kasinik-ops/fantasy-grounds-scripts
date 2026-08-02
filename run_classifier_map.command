@@ -22,6 +22,11 @@ else
     MODE_FLAG="--album"
 fi
 
+if [ -z "$LOCATION" ]; then
+    echo "Canceled."
+    exit 0
+fi
+
 # 3. Choose execution pass
 RUN_PASS=$(osascript -e 'button returned of (display dialog "Select Pipeline Action:" buttons {"Pass 1: Categorize", "Pass 2: FGU Grid", "Both Passes"} default button "Pass 1: Categorize")')
 
@@ -42,7 +47,7 @@ fi
 source venv/bin/activate
 echo "🔄 Verifying dependencies..."
 pip install --quiet --upgrade pip
-pip install --quiet torch transformers pillow osxphotos opencv-python
+pip install --quiet torch transformers pillow osxphotos opencv-python numpy
 
 # 5. Run Python script with GUI inputs passed as flags
 echo "🚀 Starting processing pipeline..."
