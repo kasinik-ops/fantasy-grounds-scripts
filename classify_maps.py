@@ -1,12 +1,18 @@
 import os
 import argparse
 import subprocess
+import shutil
 import xml.etree.ElementTree as ET
 import cv2
 import numpy as np
 import torch
+import pillow_heif
 from PIL import Image
 from transformers import CLIPModel, CLIPProcessor
+
+pillow_heif.register_heif_opener()  # lets PIL open .heic/.heif (iPhone's default photo format)
+
+VALID_IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif')
 
 # --- 1. ARGUMENT PARSER (Receives input from .command GUI) ---
 parser = argparse.ArgumentParser(description="TTRPG Map Processor")
@@ -26,6 +32,15 @@ parser.add_argument("--grid-max-fraction", type=float, default=0.25,
 parser.add_argument("--grid-min-confidence", type=float, default=0.15,
                      help="Pass 2: minimum normalized autocorrelation confidence (0-1) before "
                           "reporting 'no grid detected' (default: 0.15)")
+parser.add_argument("--move-to", type=str, default=None,
+                     help="Pass 1: destination directory to sort classified images into "
+                          "(a subfolder per category is created inside it). Local folders "
+                          "default to the source folder itself if omitted; Apple Photos "
+                          "albums prompt for a destination.")
+parser.add_argument("--no-move", action="store_true",
+                     help="Pass 1: classify only, don't move/export files into category folders")
+parser.add_argument("-y", "--yes", action="store_true",
+                     help="Pass 1: skip the move/export confirmation prompt")
 args = parser.parse_args()
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -58,8 +73,75 @@ CATEGORIES = {
     "outdoors, wilderness": "a top-down TTRPG battle map of outdoor wilderness, forest, or untamed nature",
 }
 
-# --- PASS 1: CLIP CATEGORIZATION ---
-def run_pass_1(image_paths, is_apple_photos=False, unclassified_threshold=25.0):
+# --- PASS 1: CLIP CATEGORIZATION + SORT-BY-CATEGORY ---
+def _unique_path(dest_path):
+    """dest_path if free, otherwise the same path with ' (2)', ' (3)', ... inserted
+    before the extension, so a move never silently overwrites an unrelated file."""
+    if not os.path.exists(dest_path):
+        return dest_path
+    base, ext = os.path.splitext(dest_path)
+    n = 2
+    while True:
+        candidate = f"{base} ({n}){ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        n += 1
+
+def move_image_and_sidecar(image_path, dest_dir):
+    """Move image_path into dest_dir (collision-safe), bringing along its FGU grid
+    sidecar XML (<image_path>.xml, written by Pass 2) if one exists, so the sidecar
+    doesn't end up orphaned pointing at a file that's no longer there. Returns the
+    image's new path."""
+    dest_image_path = _unique_path(os.path.join(dest_dir, os.path.basename(image_path)))
+    src_sidecar = f"{image_path}.xml"
+    shutil.move(image_path, dest_image_path)
+    if os.path.exists(src_sidecar):
+        shutil.move(src_sidecar, f"{dest_image_path}.xml")
+    return dest_image_path
+
+def resolve_move_root(args, image_count, is_apple_photos, source_dir):
+    """Ask (via CLI flag or an interactive prompt) where classified files should be
+    sorted into, then warn and confirm before Pass 1 touches anything. Returns the
+    destination root, or None if moving/exporting should be skipped."""
+    if args.no_move:
+        return None
+
+    if args.move_to:
+        move_root = os.path.abspath(os.path.expanduser(args.move_to))
+    else:
+        default_hint = os.path.abspath(source_dir) if source_dir else None
+        prompt = "Destination directory to sort classified files into (a subfolder per category will be created inside it)"
+        prompt += f" [{default_hint}]: " if default_hint else ": "
+        try:
+            answer = input(prompt).strip()
+        except EOFError:
+            answer = ""
+        if answer:
+            move_root = os.path.abspath(os.path.expanduser(answer))
+        elif default_hint:
+            move_root = default_hint
+        else:
+            print("❌ No destination directory given; skipping move/export step.")
+            return None
+
+    if is_apple_photos:
+        verb, detail = "export copies of", "Originals stay untouched in Photos; classified COPIES will be written there."
+    else:
+        verb, detail = "MOVE", "Files will be moved out of their current location -- this is not easily undone."
+    print(f"\n⚠️  This will {verb} {image_count} file(s) into category-named subfolders under:\n    {move_root}\n    {detail}")
+
+    if not args.yes:
+        try:
+            confirm = input("Proceed? [y/N]: ").strip().lower()
+        except EOFError:
+            confirm = ""
+        if confirm != "y":
+            print("Skipping move/export step.")
+            return None
+
+    return move_root
+
+def run_pass_1(image_paths, is_apple_photos=False, unclassified_threshold=25.0, move_root=None):
     print("\n--- Running Pass 1: Category Tagging (CLIP AI) ---")
     model_id = "openai/clip-vit-base-patch32"
     model = CLIPModel.from_pretrained(model_id).to(DEVICE)
@@ -67,12 +149,14 @@ def run_pass_1(image_paths, is_apple_photos=False, unclassified_threshold=25.0):
 
     keywords = list(CATEGORIES.keys())
     prompts = list(CATEGORIES.values())
+    updated_paths = []
 
-    for idx, (path, photo_uuid) in enumerate(image_paths, start=1):
+    for idx, (path, photo_uuid, photo_obj) in enumerate(image_paths, start=1):
+        current_path = path
         try:
-            image = Image.open(path).convert("RGB")
+            image = Image.open(current_path).convert("RGB")
             inputs = processor(text=prompts, images=image, return_tensors="pt", padding=True).to(DEVICE)
-            
+
             with torch.no_grad():
                 outputs = model(**inputs)
                 probs = outputs.logits_per_image.softmax(dim=1)
@@ -81,7 +165,7 @@ def run_pass_1(image_paths, is_apple_photos=False, unclassified_threshold=25.0):
             confidence = probs[0][best_idx].item() * 100
             assigned_tag = keywords[best_idx] if confidence >= unclassified_threshold else "unclassified"
 
-            print(f"[{idx}/{len(image_paths)}] {os.path.basename(path)} -> Tagged: '{assigned_tag}' ({confidence:.1f}%)")
+            print(f"[{idx}/{len(image_paths)}] {os.path.basename(current_path)} -> Tagged: '{assigned_tag}' ({confidence:.1f}%)")
 
             if is_apple_photos and photo_uuid:
                 # Write back to Apple Photos
@@ -98,8 +182,27 @@ def run_pass_1(image_paths, is_apple_photos=False, unclassified_threshold=25.0):
                 '''
                 subprocess.run(["osascript", "-e", script], check=False, stdout=subprocess.DEVNULL)
 
+            if move_root:
+                dest_dir = os.path.join(move_root, assigned_tag)
+                os.makedirs(dest_dir, exist_ok=True)
+                try:
+                    if is_apple_photos:
+                        if photo_obj is not None:
+                            exported = photo_obj.export(dest_dir)
+                            if exported:
+                                print(f"    -> exported copy to {exported[0]}")
+                    else:
+                        current_path = move_image_and_sidecar(current_path, dest_dir)
+                        print(f"    -> moved to {current_path}")
+                except Exception as move_err:
+                    print(f"    -> ❌ move/export failed: {move_err}")
+
         except Exception as e:
             print(f"[{idx}/{len(image_paths)}] ❌ Error: {e}")
+
+        updated_paths.append((current_path, photo_uuid, photo_obj))
+
+    return updated_paths
 
 # --- PASS 2: FGU GRID DETECTION ---
 # Grid spacing is detected from the map's own pixels via autocorrelation of its
@@ -167,10 +270,10 @@ def detect_grid(image_path, min_grid_px=20, max_grid_fraction=0.25, min_confiden
     min_grid_px: smallest grid square (px) to consider.
     max_grid_fraction: largest grid square, as a fraction of the shorter image side.
     min_confidence: normalized autocorrelation peak below which to report "no grid"."""
-    img = cv2.imread(image_path)
-    if img is None:
+    try:
+        gray = np.array(Image.open(image_path).convert("L"))
+    except Exception:
         return None
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     height, width = gray.shape
 
     max_px = int(min(width, height) * max_grid_fraction)
@@ -218,7 +321,7 @@ def write_grid_sidecar(image_path, spacing_x, spacing_y, offset_x, offset_y):
 def run_pass_2(image_paths, force=False, min_grid_px=20, max_grid_fraction=0.25, min_confidence=0.15):
     print("\n--- Running Pass 2: Fantasy Grounds Grid Alignment ---")
     detected_any = False
-    for idx, (path, _) in enumerate(image_paths, start=1):
+    for idx, (path, _, _) in enumerate(image_paths, start=1):
         if os.path.exists(f"{path}.xml") and not force:
             print(f"[{idx}/{len(image_paths)}] {os.path.basename(path)} -> Sidecar already exists, skipped (use -f to overwrite).")
             continue
@@ -244,16 +347,15 @@ def run_pass_2(image_paths, force=False, min_grid_px=20, max_grid_fraction=0.25,
 
 # --- MAIN CONTROLLER ---
 def main():
-    image_paths = [] # Holds tuples of (file_path, photo_uuid)
+    image_paths = [] # Holds tuples of (file_path, photo_uuid, photo_obj)
     is_apple_photos = False
 
     if getattr(args, 'dir') and args.dir:
         folder = args.dir
-        valid_exts = ('.png', '.jpg', '.jpeg', '.webp')
         for root, _, files in os.walk(folder):
             for file in files:
-                if file.lower().endswith(valid_exts):
-                    image_paths.append((os.path.join(root, file), None))
+                if file.lower().endswith(VALID_IMAGE_EXTS):
+                    image_paths.append((os.path.join(root, file), None, None))
         print(f"📂 Found {len(image_paths)} map files in local directory.")
 
     elif getattr(args, 'album') and args.album:
@@ -261,9 +363,14 @@ def main():
         is_apple_photos = True
         photosdb = osxphotos.PhotosDB()
         photos = photosdb.photos(albums=[args.album])
+        skipped = 0
         for p in photos:
-            if p.path:
-                image_paths.append((p.path, p.uuid))
+            if p.path and p.path.lower().endswith(VALID_IMAGE_EXTS):
+                image_paths.append((p.path, p.uuid, p))
+            elif p.path:
+                skipped += 1  # e.g. videos/Live Photo .mov components -- not a still image
+        if skipped:
+            print(f"   (skipped {skipped} non-image item(s), e.g. videos)")
         print(f"📸 Found {len(image_paths)} map files in Apple Photos album '{args.album}'.")
 
     if not image_paths:
@@ -273,7 +380,12 @@ def main():
     # Execute selected passes
     selected_pass = getattr(args, 'pass')
     if selected_pass in ["1", "both"]:
-        run_pass_1(image_paths, is_apple_photos, unclassified_threshold=args.unclassified_threshold)
+        move_root = resolve_move_root(args, len(image_paths), is_apple_photos, args.dir)
+        image_paths = run_pass_1(
+            image_paths, is_apple_photos,
+            unclassified_threshold=args.unclassified_threshold,
+            move_root=move_root,
+        )
     if selected_pass in ["2", "both"]:
         run_pass_2(
             image_paths,
