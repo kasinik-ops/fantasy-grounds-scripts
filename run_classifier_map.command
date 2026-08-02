@@ -38,7 +38,54 @@ else
     PASS_FLAG="--pass both"
 fi
 
-# 4. Environment Setup
+RUNS_PASS_1=false
+RUNS_PASS_2=false
+if [ "$RUN_PASS" != "Pass 2: FGU Grid" ]; then
+    RUNS_PASS_1=true
+fi
+if [ "$RUN_PASS" != "Pass 1: Categorize" ]; then
+    RUNS_PASS_2=true
+fi
+
+# 4. Pass 2: overwrite-existing-sidecar toggle
+FORCE_FLAG=""
+if [ "$RUNS_PASS_2" == true ]; then
+    OVERWRITE_CHOICE=$(osascript -e 'button returned of (display dialog "Pass 2: some maps may already have an FGU grid sidecar (.xml) file. Overwrite existing sidecars, or skip them?" buttons {"Skip Existing", "Overwrite (-f)"} default button "Skip Existing")')
+    if [ "$OVERWRITE_CHOICE" == "Overwrite (-f)" ]; then
+        FORCE_FLAG="--force"
+    fi
+fi
+
+# 5. Advanced detection parameters (optional)
+ADVANCED_FLAGS=""
+CUSTOMIZE=$(osascript -e 'button returned of (display dialog "Use default detection settings, or customize advanced parameters?" buttons {"Use Defaults", "Customize"} default button "Use Defaults")')
+
+if [ "$CUSTOMIZE" == "Customize" ]; then
+    if [ "$RUNS_PASS_1" == true ]; then
+        UNCLASSIFIED_THRESHOLD=$(osascript -e 'text returned of (display dialog "Pass 1: minimum CLIP confidence (%) before tagging an image \"unclassified\" instead of forcing the closest category:" default answer "25")')
+        if [ -n "$UNCLASSIFIED_THRESHOLD" ]; then
+            ADVANCED_FLAGS="$ADVANCED_FLAGS --unclassified-threshold $UNCLASSIFIED_THRESHOLD"
+        fi
+    fi
+    if [ "$RUNS_PASS_2" == true ]; then
+        GRID_MIN_PX=$(osascript -e 'text returned of (display dialog "Pass 2: minimum grid square size to consider, in pixels:" default answer "20")')
+        if [ -n "$GRID_MIN_PX" ]; then
+            ADVANCED_FLAGS="$ADVANCED_FLAGS --grid-min-px $GRID_MIN_PX"
+        fi
+
+        GRID_MAX_FRACTION=$(osascript -e 'text returned of (display dialog "Pass 2: maximum grid square size, as a fraction of the shorter image side:" default answer "0.25")')
+        if [ -n "$GRID_MAX_FRACTION" ]; then
+            ADVANCED_FLAGS="$ADVANCED_FLAGS --grid-max-fraction $GRID_MAX_FRACTION"
+        fi
+
+        GRID_MIN_CONFIDENCE=$(osascript -e 'text returned of (display dialog "Pass 2: minimum grid-detection confidence (0-1) before reporting \"no grid detected\":" default answer "0.15")')
+        if [ -n "$GRID_MIN_CONFIDENCE" ]; then
+            ADVANCED_FLAGS="$ADVANCED_FLAGS --grid-min-confidence $GRID_MIN_CONFIDENCE"
+        fi
+    fi
+fi
+
+# 6. Environment Setup
 if [ ! -d "venv" ]; then
     echo "📦 Creating first-time virtual environment..."
     python3 -m venv venv
@@ -49,9 +96,9 @@ echo "🔄 Verifying dependencies..."
 pip install --quiet --upgrade pip
 pip install --quiet torch transformers pillow osxphotos opencv-python numpy
 
-# 5. Run Python script with GUI inputs passed as flags
+# 7. Run Python script with GUI inputs passed as flags
 echo "🚀 Starting processing pipeline..."
-python classify_maps.py $MODE_FLAG "$LOCATION" $PASS_FLAG
+python classify_maps.py $MODE_FLAG "$LOCATION" $PASS_FLAG $FORCE_FLAG $ADVANCED_FLAGS
 
 echo ""
 echo "✅ Pipeline complete! Press any key to close."

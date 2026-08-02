@@ -13,6 +13,19 @@ parser = argparse.ArgumentParser(description="TTRPG Map Processor")
 parser.add_argument("--dir", type=str, help="Path to local folder containing map images")
 parser.add_argument("--album", type=str, help="Name of Apple Photos album")
 parser.add_argument("--pass", choices=["1", "2", "both"], default="1", help="Execution pass")
+parser.add_argument("-f", "--force", action="store_true",
+                     help="Pass 2: overwrite existing FGU grid sidecar XML files instead of skipping them")
+parser.add_argument("--unclassified-threshold", type=float, default=25.0,
+                     help="Pass 1: minimum CLIP confidence percent before tagging 'unclassified' "
+                          "instead of forcing the closest category (default: 25.0)")
+parser.add_argument("--grid-min-px", type=int, default=20,
+                     help="Pass 2: minimum grid square size to consider, in pixels (default: 20)")
+parser.add_argument("--grid-max-fraction", type=float, default=0.25,
+                     help="Pass 2: maximum grid square size, as a fraction of the shorter image "
+                          "side (default: 0.25)")
+parser.add_argument("--grid-min-confidence", type=float, default=0.15,
+                     help="Pass 2: minimum normalized autocorrelation confidence (0-1) before "
+                          "reporting 'no grid detected' (default: 0.15)")
 args = parser.parse_args()
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -45,12 +58,8 @@ CATEGORIES = {
     "outdoors, wilderness": "a top-down TTRPG battle map of outdoor wilderness, forest, or untamed nature",
 }
 
-# Below this confidence (%), CLIP's best guess is unreliable and the image is tagged
-# "unclassified" instead of forcing it into the closest (but likely wrong) category.
-UNCLASSIFIED_CONFIDENCE_THRESHOLD = 25.0
-
 # --- PASS 1: CLIP CATEGORIZATION ---
-def run_pass_1(image_paths, is_apple_photos=False):
+def run_pass_1(image_paths, is_apple_photos=False, unclassified_threshold=25.0):
     print("\n--- Running Pass 1: Category Tagging (CLIP AI) ---")
     model_id = "openai/clip-vit-base-patch32"
     model = CLIPModel.from_pretrained(model_id).to(DEVICE)
@@ -70,7 +79,7 @@ def run_pass_1(image_paths, is_apple_photos=False):
 
             best_idx = probs.argmax().item()
             confidence = probs[0][best_idx].item() * 100
-            assigned_tag = keywords[best_idx] if confidence >= UNCLASSIFIED_CONFIDENCE_THRESHOLD else "unclassified"
+            assigned_tag = keywords[best_idx] if confidence >= unclassified_threshold else "unclassified"
 
             print(f"[{idx}/{len(image_paths)}] {os.path.basename(path)} -> Tagged: '{assigned_tag}' ({confidence:.1f}%)")
 
@@ -100,10 +109,6 @@ def run_pass_1(image_paths, is_apple_photos=False):
 # support <gridsize>; whether it honors an offset tag at all has NOT been
 # verified. Test-import one map in FGU and check the grid lines up before
 # trusting it across a whole library.
-MIN_GRID_PX = 20
-MAX_GRID_FRACTION = 0.25  # a grid square can't be wider than this fraction of the shorter image side
-GRID_DETECTION_MIN_CONFIDENCE = 0.15  # normalized autocorrelation peak; below this, treat as "no grid"
-
 FGU_XML_VERSION = "4.1"
 FGU_XML_DATAVERSION = "20210302"
 
@@ -155,24 +160,28 @@ def _center_offset(phase_px, spacing, extent):
         centered -= spacing
     return centered
 
-def detect_grid(image_path):
+def detect_grid(image_path, min_grid_px=20, max_grid_fraction=0.25, min_confidence=0.15):
     """Detect (spacing_x, spacing_y, offset_x, offset_y, confidence) in pixels, or
-    None if no reliable grid is found."""
+    None if no reliable grid is found.
+
+    min_grid_px: smallest grid square (px) to consider.
+    max_grid_fraction: largest grid square, as a fraction of the shorter image side.
+    min_confidence: normalized autocorrelation peak below which to report "no grid"."""
     img = cv2.imread(image_path)
     if img is None:
         return None
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     height, width = gray.shape
 
-    max_px = int(min(width, height) * MAX_GRID_FRACTION)
+    max_px = int(min(width, height) * max_grid_fraction)
     col_profile, row_profile = _axis_profiles(gray)
-    spacing_x, conf_x = _dominant_period(col_profile, MIN_GRID_PX, max_px)
-    spacing_y, conf_y = _dominant_period(row_profile, MIN_GRID_PX, max_px)
+    spacing_x, conf_x = _dominant_period(col_profile, min_grid_px, max_px)
+    spacing_y, conf_y = _dominant_period(row_profile, min_grid_px, max_px)
 
     if spacing_x is None or spacing_y is None:
         return None
     confidence = min(conf_x, conf_y)
-    if confidence < GRID_DETECTION_MIN_CONFIDENCE:
+    if confidence < min_confidence:
         return None
 
     offset_x = _center_offset(_grid_phase(col_profile, spacing_x), spacing_x, width)
@@ -206,11 +215,14 @@ def write_grid_sidecar(image_path, spacing_x, spacing_y, offset_x, offset_y):
     ET.indent(root, space="    ")
     ET.ElementTree(root).write(xml_path, encoding="UTF-8", xml_declaration=True)
 
-def run_pass_2(image_paths):
+def run_pass_2(image_paths, force=False, min_grid_px=20, max_grid_fraction=0.25, min_confidence=0.15):
     print("\n--- Running Pass 2: Fantasy Grounds Grid Alignment ---")
     detected_any = False
     for idx, (path, _) in enumerate(image_paths, start=1):
-        result = detect_grid(path)
+        if os.path.exists(f"{path}.xml") and not force:
+            print(f"[{idx}/{len(image_paths)}] {os.path.basename(path)} -> Sidecar already exists, skipped (use -f to overwrite).")
+            continue
+        result = detect_grid(path, min_grid_px=min_grid_px, max_grid_fraction=max_grid_fraction, min_confidence=min_confidence)
         if result is None:
             print(f"[{idx}/{len(image_paths)}] {os.path.basename(path)} -> No grid detected, skipped.")
             continue
@@ -261,9 +273,15 @@ def main():
     # Execute selected passes
     selected_pass = getattr(args, 'pass')
     if selected_pass in ["1", "both"]:
-        run_pass_1(image_paths, is_apple_photos)
+        run_pass_1(image_paths, is_apple_photos, unclassified_threshold=args.unclassified_threshold)
     if selected_pass in ["2", "both"]:
-        run_pass_2(image_paths)
+        run_pass_2(
+            image_paths,
+            force=args.force,
+            min_grid_px=args.grid_min_px,
+            max_grid_fraction=args.grid_max_fraction,
+            min_confidence=args.grid_min_confidence,
+        )
 
 if __name__ == "__main__":
     main()
