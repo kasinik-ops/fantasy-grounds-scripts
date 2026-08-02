@@ -46,3 +46,50 @@ Disclaimer & Safety
 
 • Reboot Required: You must reboot after the script finishes to ensure the system cache is fully cleared.
 
+**classify_maps.py / run_classifier_map.command**
+
+A two-pass pipeline for organizing and prepping TTRPG battle maps. Pass 1 uses CLIP (an AI image classifier) to sort maps into categories; Pass 2 detects each map's grid and writes a Fantasy Grounds Unity sidecar XML file for it. Works against either a local folder of images or an Apple Photos album.
+
+Run `./run_classifier_map.command` (double-clickable in Finder) for a guided, dialog-based version of everything below, or call `classify_maps.py` directly for full control over every flag. The launcher sets up its own `venv` and installs dependencies (`torch`, `transformers`, `pillow`, `pillow-heif`, `osxphotos<0.67`, `opencv-python`, `numpy`) on first run. Supported image types: PNG, JPG/JPEG, WEBP, HEIC/HEIF.
+
+*Pass 1: Categorize*
+
+Classifies each map into one of the categories below using zero-shot CLIP classification (no training/dataset needed):
+
+- **indoors**: castle&fort&tower, cave, church, crypt, dungeon, inn&house, manor, modern, scifi, unclassified
+- **outdoors**: camp, castle&fort&tower, overgrowth, planar, regional, ruin, scifi, ship, site of interest, trail&bridge&travel, urban&town&city, village&rural, water&coast, wilderness
+- **other**: map scenes, unclassified
+
+Low-confidence matches are tagged `unclassified` instead of being forced into a poorly-fitting category (`--unclassified-threshold`, default 25%) -- CLIP always returns its best guess even when nothing really fits.
+
+Classified files then get sorted: local-folder images are moved into category-named subfolders under a destination directory you're asked for; Apple Photos images are exported as classified copies into that destination (originals are left alone in Photos -- moving the real library file directly risks corrupting it) and also get the category written back as a Photos keyword on the original. Before moving/exporting anything, the pipeline always prints how many files are affected and where, and asks for confirmation (`-y`/`--yes` to skip the prompt, `--no-move` to disable moving entirely, `--move-to <dir>` to set the destination without being asked).
+
+Pass 1 only scans files sitting directly in the selected folder, not subdirectories -- so re-running it won't re-classify maps a previous run already sorted into category subfolders.
+
+*Pass 2: FGU Grid*
+
+Detects each map's grid (square size + pixel offset) straight from the image -- no manual measuring. Writes `<mapfile>.xml` next to the image: `<gridsize>` is a verified Fantasy Grounds Unity sidecar field (cross-checked against the [Imagix/uvtt2fgu](https://github.com/Imagix/uvtt2fgu) reference tool); `<gridoffset>` is a best-effort guess that hasn't been confirmed as something FGU actually reads, so test-import one map and check the grid lines up before trusting it across a whole library.
+
+Unlike Pass 1, this scans recursively (including category subfolders), so it can reach maps Pass 1 already sorted. It skips images that already have a sidecar XML by default, to avoid clobbering hand-tuned values (`-f`/`--force` to overwrite instead). Detected grids are also rejected unless the candidate lines actually span most of the image, not just look periodic in aggregate -- this stops photos with repeating texture (railings, decking, portholes) from being scored as if they had a real drawn battle-map grid.
+
+*Getting a classified map into Fantasy Grounds*
+
+Sidecar XML only takes effect once both the image and its `.xml` are copied into your campaign's `images/` folder (flat, not in a subfolder), keeping the same filename. This is a deliberate manual step, not automated by this pipeline, since a library can run into the thousands of files. Once copied, import the image into FGU as normal and check the grid.
+
+*Command-line flags*
+
+| Flag | Pass | Default | Purpose |
+| --- | --- | --- | --- |
+| `--dir DIR` | both | | Local folder of map images |
+| `--album ALBUM` | both | | Apple Photos album name |
+| `--pass {1,2,both}` | | `1` | Which pass(es) to run |
+| `-f`, `--force` | 2 | off | Overwrite an existing sidecar XML instead of skipping it |
+| `--unclassified-threshold` | 1 | `25.0` | Minimum CLIP confidence (%) before falling back to `unclassified` |
+| `--move-to DIR` | 1 | prompt | Destination for sorted/exported files |
+| `--no-move` | 1 | off | Classify only; don't move or export files |
+| `-y`, `--yes` | 1 | off | Skip the move/export confirmation prompt |
+| `--grid-min-px` | 2 | `20` | Smallest grid square (px) to consider |
+| `--grid-max-fraction` | 2 | `0.25` | Largest grid square, as a fraction of the shorter image side |
+| `--grid-min-confidence` | 2 | `0.15` | Minimum autocorrelation confidence (0-1) before reporting "no grid" |
+| `--grid-min-line-coverage` | 2 | `0.5` | Minimum fraction (0-1) of the image a candidate grid line must actually span to count as real |
+
