@@ -1,4 +1,6 @@
 .env
+venv/
+
 # General
 .DS_Store
 __MACOSX/
