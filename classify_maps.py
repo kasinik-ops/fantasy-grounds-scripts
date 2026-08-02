@@ -32,6 +32,11 @@ parser.add_argument("--grid-max-fraction", type=float, default=0.25,
 parser.add_argument("--grid-min-confidence", type=float, default=0.15,
                      help="Pass 2: minimum normalized autocorrelation confidence (0-1) before "
                           "reporting 'no grid detected' (default: 0.15)")
+parser.add_argument("--grid-min-line-coverage", type=float, default=0.5,
+                     help="Pass 2: minimum fraction (0-1) of the image a candidate grid line must "
+                          "actually span to count as real, rejecting periodic photo texture like "
+                          "railings or decking that autocorrelation alone can't tell apart from a "
+                          "genuine drawn grid (default: 0.5)")
 parser.add_argument("--move-to", type=str, default=None,
                      help="Pass 1: destination directory to sort classified images into "
                           "(a subfolder per category is created inside it). Local folders "
@@ -216,12 +221,14 @@ FGU_XML_VERSION = "4.1"
 FGU_XML_DATAVERSION = "20210302"
 
 def _axis_profiles(gray):
-    """Column/row projection profiles that spike at vertical/horizontal grid lines."""
-    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-    col_profile = np.abs(grad_x).sum(axis=0)
-    row_profile = np.abs(grad_y).sum(axis=1)
-    return col_profile, row_profile
+    """Column/row projection profiles that spike at vertical/horizontal grid lines,
+    plus the underlying per-pixel gradient magnitude maps (used by _line_coverage to
+    verify a candidate line is a real edge spanning the image, not just texture)."""
+    grad_x = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
+    grad_y = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
+    col_profile = grad_x.sum(axis=0)
+    row_profile = grad_y.sum(axis=1)
+    return col_profile, row_profile, grad_x, grad_y
 
 def _dominant_period(profile, min_px, max_px):
     """Strongest repeating spacing in a 1D profile, preferring the smallest
@@ -254,6 +261,36 @@ def _grid_phase(profile, spacing):
         sums[phase] = profile[phase::spacing].sum()
     return int(np.argmax(sums))
 
+def _line_coverage(grad_abs, spacing, phase, axis):
+    """Fraction of candidate grid lines (spaced `spacing` apart, starting at `phase`)
+    backed by a real edge spanning most of the image -- not just a strong aggregate
+    sum, which periodic photographic texture (railings, decking, tiled surfaces,
+    portholes) can produce just as easily as a genuine drawn grid line. Autocorrelation
+    alone can't tell "there's periodicity somewhere in this row/column sum" apart from
+    "there's an actual continuous line here", which is what this checks instead.
+
+    Uses the 40th-percentile line, not the mean, so a few lines obscured by map
+    tokens/labels don't sink an otherwise-real grid.
+
+    axis=0: candidate lines are columns (vertical grid lines) of grad_abs.
+    axis=1: candidate lines are rows (horizontal grid lines) of grad_abs."""
+    threshold = np.percentile(grad_abs, 80)
+    if threshold <= 0:
+        return 0.0
+    edge_mask = grad_abs > threshold
+
+    if axis == 0:
+        positions = range(phase, edge_mask.shape[1], spacing)
+        coverages = [edge_mask[:, x].mean() for x in positions]
+    else:
+        positions = range(phase, edge_mask.shape[0], spacing)
+        coverages = [edge_mask[y, :].mean() for y in positions]
+
+    if not coverages:
+        return 0.0
+    coverages.sort()
+    return float(coverages[int(len(coverages) * 0.4)])
+
 def _center_offset(phase_px, spacing, extent):
     """Fold a from-edge pixel offset into the signed offset (in [-spacing/2, spacing/2))
     of the nearest grid line from the image's center, matching the pixel-from-center
@@ -263,13 +300,18 @@ def _center_offset(phase_px, spacing, extent):
         centered -= spacing
     return centered
 
-def detect_grid(image_path, min_grid_px=20, max_grid_fraction=0.25, min_confidence=0.15):
+def detect_grid(image_path, min_grid_px=20, max_grid_fraction=0.25, min_confidence=0.15,
+                 min_line_coverage=0.5):
     """Detect (spacing_x, spacing_y, offset_x, offset_y, confidence) in pixels, or
     None if no reliable grid is found.
 
     min_grid_px: smallest grid square (px) to consider.
     max_grid_fraction: largest grid square, as a fraction of the shorter image side.
-    min_confidence: normalized autocorrelation peak below which to report "no grid"."""
+    min_confidence: normalized autocorrelation peak below which to report "no grid".
+    min_line_coverage: minimum fraction of the image a candidate grid line must
+    actually span (see _line_coverage) -- rejects periodic photographic texture
+    (railings, decking, tiles) that autocorrelation alone can score as confidently
+    as a genuine drawn grid."""
     try:
         gray = np.array(Image.open(image_path).convert("L"))
     except Exception:
@@ -277,7 +319,7 @@ def detect_grid(image_path, min_grid_px=20, max_grid_fraction=0.25, min_confiden
     height, width = gray.shape
 
     max_px = int(min(width, height) * max_grid_fraction)
-    col_profile, row_profile = _axis_profiles(gray)
+    col_profile, row_profile, grad_x, grad_y = _axis_profiles(gray)
     spacing_x, conf_x = _dominant_period(col_profile, min_grid_px, max_px)
     spacing_y, conf_y = _dominant_period(row_profile, min_grid_px, max_px)
 
@@ -287,8 +329,16 @@ def detect_grid(image_path, min_grid_px=20, max_grid_fraction=0.25, min_confiden
     if confidence < min_confidence:
         return None
 
-    offset_x = _center_offset(_grid_phase(col_profile, spacing_x), spacing_x, width)
-    offset_y = _center_offset(_grid_phase(row_profile, spacing_y), spacing_y, height)
+    phase_x = _grid_phase(col_profile, spacing_x)
+    phase_y = _grid_phase(row_profile, spacing_y)
+
+    coverage_x = _line_coverage(grad_x, spacing_x, phase_x, axis=0)
+    coverage_y = _line_coverage(grad_y, spacing_y, phase_y, axis=1)
+    if min(coverage_x, coverage_y) < min_line_coverage:
+        return None
+
+    offset_x = _center_offset(phase_x, spacing_x, width)
+    offset_y = _center_offset(phase_y, spacing_y, height)
 
     return spacing_x, spacing_y, offset_x, offset_y, confidence
 
@@ -318,14 +368,18 @@ def write_grid_sidecar(image_path, spacing_x, spacing_y, offset_x, offset_y):
     ET.indent(root, space="    ")
     ET.ElementTree(root).write(xml_path, encoding="UTF-8", xml_declaration=True)
 
-def run_pass_2(image_paths, force=False, min_grid_px=20, max_grid_fraction=0.25, min_confidence=0.15):
+def run_pass_2(image_paths, force=False, min_grid_px=20, max_grid_fraction=0.25, min_confidence=0.15,
+               min_line_coverage=0.5):
     print("\n--- Running Pass 2: Fantasy Grounds Grid Alignment ---")
     detected_any = False
     for idx, (path, _, _) in enumerate(image_paths, start=1):
         if os.path.exists(f"{path}.xml") and not force:
             print(f"[{idx}/{len(image_paths)}] {os.path.basename(path)} -> Sidecar already exists, skipped (use -f to overwrite).")
             continue
-        result = detect_grid(path, min_grid_px=min_grid_px, max_grid_fraction=max_grid_fraction, min_confidence=min_confidence)
+        result = detect_grid(
+            path, min_grid_px=min_grid_px, max_grid_fraction=max_grid_fraction,
+            min_confidence=min_confidence, min_line_coverage=min_line_coverage,
+        )
         if result is None:
             print(f"[{idx}/{len(image_paths)}] {os.path.basename(path)} -> No grid detected, skipped.")
             continue
@@ -345,55 +399,92 @@ def run_pass_2(image_paths, force=False, min_grid_px=20, max_grid_fraction=0.25,
             "trusting the offset across the rest of the library."
         )
 
-# --- MAIN CONTROLLER ---
-def main():
-    image_paths = [] # Holds tuples of (file_path, photo_uuid, photo_obj)
-    is_apple_photos = False
+def _scan_local_dir(folder, recursive):
+    """[(path, None, None), ...] for supported image files under folder.
 
-    if getattr(args, 'dir') and args.dir:
-        folder = args.dir
+    recursive=False only looks directly inside folder -- used for Pass 1, so maps
+    already sorted into category subfolders by a previous run aren't re-classified.
+    recursive=True walks all subdirectories -- used for Pass 2, so it can still
+    reach maps already sorted into those category subfolders."""
+    paths = []
+    if recursive:
         for root, _, files in os.walk(folder):
             for file in files:
                 if file.lower().endswith(VALID_IMAGE_EXTS):
-                    image_paths.append((os.path.join(root, file), None, None))
-        print(f"📂 Found {len(image_paths)} map files in local directory.")
+                    paths.append((os.path.join(root, file), None, None))
+    else:
+        for file in sorted(os.listdir(folder)):
+            full_path = os.path.join(folder, file)
+            if os.path.isfile(full_path) and file.lower().endswith(VALID_IMAGE_EXTS):
+                paths.append((full_path, None, None))
+    return paths
 
-    elif getattr(args, 'album') and args.album:
-        import osxphotos
-        is_apple_photos = True
-        photosdb = osxphotos.PhotosDB()
-        photos = photosdb.photos(albums=[args.album])
-        skipped = 0
-        for p in photos:
-            if p.path and p.path.lower().endswith(VALID_IMAGE_EXTS):
-                image_paths.append((p.path, p.uuid, p))
-            elif p.path:
-                skipped += 1  # e.g. videos/Live Photo .mov components -- not a still image
-        if skipped:
-            print(f"   (skipped {skipped} non-image item(s), e.g. videos)")
-        print(f"📸 Found {len(image_paths)} map files in Apple Photos album '{args.album}'.")
+def _scan_album(album_name):
+    """[(path, uuid, PhotoInfo), ...] for supported image items in the named Apple
+    Photos album."""
+    import osxphotos
+    photosdb = osxphotos.PhotosDB()
+    photos = photosdb.photos(albums=[album_name])
+    paths = []
+    skipped = 0
+    for p in photos:
+        if p.path and p.path.lower().endswith(VALID_IMAGE_EXTS):
+            paths.append((p.path, p.uuid, p))
+        elif p.path:
+            skipped += 1  # e.g. videos/Live Photo .mov components -- not a still image
+    if skipped:
+        print(f"   (skipped {skipped} non-image item(s), e.g. videos)")
+    return paths
 
-    if not image_paths:
+# --- MAIN CONTROLLER ---
+def main():
+    using_dir = bool(getattr(args, 'dir') and args.dir)
+    using_album = bool(getattr(args, 'album') and args.album)
+    is_apple_photos = using_album
+
+    if not using_dir and not using_album:
         print("❌ No valid images found.")
         return
 
-    # Execute selected passes
     selected_pass = getattr(args, 'pass')
+
     if selected_pass in ["1", "both"]:
-        move_root = resolve_move_root(args, len(image_paths), is_apple_photos, args.dir)
-        image_paths = run_pass_1(
-            image_paths, is_apple_photos,
-            unclassified_threshold=args.unclassified_threshold,
-            move_root=move_root,
-        )
+        if using_dir:
+            image_paths = _scan_local_dir(args.dir, recursive=False)
+            print(f"📂 Found {len(image_paths)} map files directly in local directory.")
+        else:
+            image_paths = _scan_album(args.album)
+            print(f"📸 Found {len(image_paths)} map files in Apple Photos album '{args.album}'.")
+
+        if not image_paths:
+            print("❌ No valid images found for Pass 1.")
+        else:
+            move_root = resolve_move_root(args, len(image_paths), is_apple_photos, args.dir)
+            run_pass_1(
+                image_paths, is_apple_photos,
+                unclassified_threshold=args.unclassified_threshold,
+                move_root=move_root,
+            )
+
     if selected_pass in ["2", "both"]:
-        run_pass_2(
-            image_paths,
-            force=args.force,
-            min_grid_px=args.grid_min_px,
-            max_grid_fraction=args.grid_max_fraction,
-            min_confidence=args.grid_min_confidence,
-        )
+        if using_dir:
+            image_paths = _scan_local_dir(args.dir, recursive=True)
+            print(f"📂 Found {len(image_paths)} map files (including subfolders) for grid detection.")
+        else:
+            image_paths = _scan_album(args.album)
+            print(f"📸 Found {len(image_paths)} map files in Apple Photos album '{args.album}'.")
+
+        if not image_paths:
+            print("❌ No valid images found for Pass 2.")
+        else:
+            run_pass_2(
+                image_paths,
+                force=args.force,
+                min_grid_px=args.grid_min_px,
+                max_grid_fraction=args.grid_max_fraction,
+                min_confidence=args.grid_min_confidence,
+                min_line_coverage=args.grid_min_line_coverage,
+            )
 
 if __name__ == "__main__":
     main()

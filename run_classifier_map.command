@@ -56,8 +56,8 @@ fi
 
 # 4. Pass 2: overwrite-existing-sidecar toggle
 if [ "$RUNS_PASS_2" == true ]; then
-    OVERWRITE_CHOICE=$(osascript -e 'button returned of (display dialog "Pass 2: some maps may already have an FGU grid sidecar (.xml) file. Overwrite existing sidecars, or skip them?" buttons {"Skip Existing", "Overwrite (-f)"} default button "Skip Existing")')
-    if [ "$OVERWRITE_CHOICE" == "Overwrite (-f)" ]; then
+    OVERWRITE_CHOICE=$(osascript -e 'button returned of (display dialog "Pass 2: some maps may already have an FGU grid sidecar (.xml) file. Overwrite existing sidecars, or skip them?" buttons {"Skip Existing", "Overwrite"} default button "Skip Existing")')
+    if [ "$OVERWRITE_CHOICE" == "Overwrite" ]; then
         PY_ARGS+=(--force)
     fi
 fi
@@ -102,6 +102,11 @@ if [ "$CUSTOMIZE" == "Customize" ]; then
         GRID_MIN_CONFIDENCE=$(osascript -e 'text returned of (display dialog "Pass 2: minimum grid-detection confidence (0-1) before reporting \"no grid detected\":" default answer "0.15")')
         if [ -n "$GRID_MIN_CONFIDENCE" ]; then
             PY_ARGS+=(--grid-min-confidence "$GRID_MIN_CONFIDENCE")
+        fi
+
+        GRID_MIN_LINE_COVERAGE=$(osascript -e 'text returned of (display dialog "Pass 2: minimum fraction (0-1) of the image a candidate grid line must actually span to count as real (rejects photo textures like railings or decking):" default answer "0.5")')
+        if [ -n "$GRID_MIN_LINE_COVERAGE" ]; then
+            PY_ARGS+=(--grid-min-line-coverage "$GRID_MIN_LINE_COVERAGE")
         fi
     fi
 fi
