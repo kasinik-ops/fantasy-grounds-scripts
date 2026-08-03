@@ -46,13 +46,13 @@ Disclaimer & Safety
 
 • Reboot Required: You must reboot after the script finishes to ensure the system cache is fully cleared.
 
-**classify_maps.py / run_classifier_map.command**
+**classify_maps.py / detect_grid.py**
 
-A two-pass pipeline for organizing and prepping TTRPG battle maps. Pass 1 uses CLIP (an AI image classifier) to sort maps into categories; Pass 2 detects each map's grid and writes a Fantasy Grounds Unity sidecar XML file for it. Works against either a local folder of images or an Apple Photos album.
+Two independent scripts for organizing and prepping TTRPG battle maps. `classify_maps.py` uses CLIP (an AI image classifier) to sort maps into categories; `detect_grid.py` detects each map's grid and writes a Fantasy Grounds Unity sidecar XML file for it. They used to be one script with a `--pass` flag; they're now split so each can be run, packaged, and (eventually) ported to Windows independently. Both work against either a local folder of images or an Apple Photos album.
 
-Run `./run_classifier_map.command` (double-clickable in Finder) for a guided, dialog-based version of everything below, or call `classify_maps.py` directly for full control over every flag. The launcher sets up its own `venv` and installs dependencies (`torch`, `transformers`, `pillow`, `pillow-heif`, `osxphotos<0.67`, `opencv-python`, `numpy`) on first run. Supported image types: PNG, JPG/JPEG, WEBP, HEIC/HEIF.
+Run `./run_classifier_map.command` and `./run_grid_detector.command` (double-clickable in Finder) for a guided, dialog-based version of everything below, or call the Python scripts directly for full control over every flag. Each launcher sets up its own `venv` and installs only the dependencies that script actually needs on first run. Supported image types: PNG, JPG/JPEG, WEBP, HEIC/HEIF. Windows support is planned but not implemented yet -- the launchers are Mac-only (`.command`/AppleScript); the Python scripts themselves don't depend on anything Mac-specific except the Apple Photos integration, which is inherently Mac-only.
 
-*Pass 1: Categorize*
+*classify_maps.py -- Categorize*
 
 Classifies each map into one of the categories below using zero-shot CLIP classification (no training/dataset needed):
 
@@ -62,34 +62,47 @@ Classifies each map into one of the categories below using zero-shot CLIP classi
 
 Low-confidence matches are tagged `unclassified` instead of being forced into a poorly-fitting category (`--unclassified-threshold`, default 25%) -- CLIP always returns its best guess even when nothing really fits.
 
-Classified files then get sorted: local-folder images are moved into category-named subfolders under a destination directory you're asked for; Apple Photos images are exported as classified copies into that destination (originals are left alone in Photos -- moving the real library file directly risks corrupting it) and also get the category written back as a Photos keyword on the original. Before moving/exporting anything, the pipeline always prints how many files are affected and where, and asks for confirmation (`-y`/`--yes` to skip the prompt, `--no-move` to disable moving entirely, `--move-to <dir>` to set the destination without being asked).
+Classified files then get sorted: local-folder images are moved into category-named subfolders under a destination directory you're asked for; Apple Photos images are exported as classified copies into that destination (originals are left alone in Photos -- moving the real library file directly risks corrupting it) and also get the category written back as a Photos keyword on the original. Before moving/exporting anything, the script always prints how many files are affected and where, and asks for confirmation (`-y`/`--yes` to skip the prompt, `--no-move` to disable moving entirely, `--move-to <dir>` to set the destination without being asked).
 
-Pass 1 only scans files sitting directly in the selected folder, not subdirectories -- so re-running it won't re-classify maps a previous run already sorted into category subfolders.
+It only scans files sitting directly in the selected folder, not subdirectories -- so re-running it won't re-classify maps a previous run already sorted into category subfolders. `run_classifier_map.command` also shows an explanation of all this (with a link to open this README) before it does anything.
 
-*Pass 2: FGU Grid*
+*detect_grid.py -- FGU Grid*
 
 Detects each map's grid (square size + pixel offset) straight from the image -- no manual measuring. Writes a sidecar XML next to the image, with the image's extension swapped for `.xml` (`map.png` -> `map.xml`, not `map.png.xml`), matching the convention `fgu_maptest.py` and the uvtt2fgu reference tool both expect: `<gridsize>` is a verified Fantasy Grounds Unity sidecar field; `<gridoffset>` is a best-effort guess that hasn't been confirmed as something FGU actually reads, so test-import one map and check the grid lines up before trusting it across a whole library.
 
-Unlike Pass 1, this scans recursively (including category subfolders), so it can reach maps Pass 1 already sorted. It skips images that already have a sidecar XML by default, to avoid clobbering hand-tuned values (`-f`/`--force` to overwrite instead). Detected grids are also rejected unless the candidate lines actually span most of the image, not just look periodic in aggregate -- this stops photos with repeating texture (railings, decking, portholes) from being scored as if they had a real drawn battle-map grid.
+Unlike `classify_maps.py`, this scans recursively (including category subfolders), so it can reach maps already sorted into them. It skips images that already have a sidecar XML by default, to avoid clobbering hand-tuned values (`-f`/`--force` to overwrite instead). Detected grids are also rejected unless the candidate lines actually span most of the image, not just look periodic in aggregate -- this stops photos with repeating texture (railings, decking, portholes) from being scored as if they had a real drawn battle-map grid.
 
-*Getting a classified map into Fantasy Grounds*
+*Getting a map into Fantasy Grounds*
 
-Sidecar XML only takes effect once both the image and its matching `.xml` (same base filename, e.g. `map.png` + `map.xml`) are copied into your campaign's `images/` folder (flat, not in a subfolder). This is a deliberate manual step, not automated by this pipeline, since a library can run into the thousands of files. Once copied, import the image into FGU as normal and check the grid.
+Neither script puts anything into Fantasy Grounds by itself -- that's a deliberate manual step, not automated by this pipeline, since a library can run into the thousands of files and you only want a handful in any given campaign. `run_grid_detector.command` shows the full explanation (with a link to open this README) before it does anything; the short version:
+
+1. Copy the map image and its matching `.xml` (same base filename, e.g. `map.png` + `map.xml`) into your campaign's `images/` folder (flat, not in a subfolder).
+2. In Fantasy Grounds: sidebar -> Library -> Assets -> Images, then click **Refresh Folder Assets** (bottom right) so it notices the new files. That same panel has a link (bottom right) that opens the images folder in Finder, handy for copying files over.
+3. Click the image, then click **Create Image Record**.
+4. In the opened map, click **Grid**, then click the eye icon to make the grid visible.
 
 *Command-line flags*
 
-| Flag | Pass | Default | Purpose |
-| --- | --- | --- | --- |
-| `--dir DIR` | both | | Local folder of map images |
-| `--album ALBUM` | both | | Apple Photos album name |
-| `--pass {1,2,both}` | | `1` | Which pass(es) to run |
-| `-f`, `--force` | 2 | off | Overwrite an existing sidecar XML instead of skipping it |
-| `--unclassified-threshold` | 1 | `25.0` | Minimum CLIP confidence (%) before falling back to `unclassified` |
-| `--move-to DIR` | 1 | prompt | Destination for sorted/exported files |
-| `--no-move` | 1 | off | Classify only; don't move or export files |
-| `-y`, `--yes` | 1 | off | Skip the move/export confirmation prompt |
-| `--grid-min-px` | 2 | `20` | Smallest grid square (px) to consider |
-| `--grid-max-fraction` | 2 | `0.25` | Largest grid square, as a fraction of the shorter image side |
-| `--grid-min-confidence` | 2 | `0.15` | Minimum autocorrelation confidence (0-1) before reporting "no grid" |
-| `--grid-min-line-coverage` | 2 | `0.5` | Minimum fraction (0-1) of the image a candidate grid line must actually span to count as real |
+`classify_maps.py`:
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--dir DIR` | | Local folder of map images |
+| `--album ALBUM` | | Apple Photos album name |
+| `--unclassified-threshold` | `25.0` | Minimum CLIP confidence (%) before falling back to `unclassified` |
+| `--move-to DIR` | prompt | Destination for sorted/exported files |
+| `--no-move` | off | Classify only; don't move or export files |
+| `-y`, `--yes` | off | Skip the move/export confirmation prompt |
+
+`detect_grid.py`:
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--dir DIR` | | Local folder of map images |
+| `--album ALBUM` | | Apple Photos album name |
+| `-f`, `--force` | off | Overwrite an existing sidecar XML instead of skipping it |
+| `--grid-min-px` | `20` | Smallest grid square (px) to consider |
+| `--grid-max-fraction` | `0.25` | Largest grid square, as a fraction of the shorter image side |
+| `--grid-min-confidence` | `0.15` | Minimum autocorrelation confidence (0-1) before reporting "no grid" |
+| `--grid-min-line-coverage` | `0.5` | Minimum fraction (0-1) of the image a candidate grid line must actually span to count as real |
 
