@@ -106,3 +106,15 @@ Neither script puts anything into Fantasy Grounds by itself -- that's a delibera
 | `--grid-min-confidence` | `0.15` | Minimum autocorrelation confidence (0-1) before reporting "no grid" |
 | `--grid-min-line-coverage` | `0.5` | Minimum fraction (0-1) of the image a candidate grid line must actually span to count as real |
 
+**test_safety.py**
+
+Safety tests for `classify_maps.py` and `detect_grid.py`: checks that neither script does anything destructive beyond what's explicitly allowed (moving maps into category subfolders, creating/overwriting a map's `.xml` sidecar), and that neither ever overwrites an existing file without that being explicitly opted into (`-y` for moving, `-f`/`--force` for sidecar overwrite). This is a complete accounting, not a sample: every write-capable call either script uses (`shutil.move`, `os.makedirs`, `ET.ElementTree.write`, `open()` in a writing mode) is intercepted for the duration of each run, and every path touched is checked against the exact directories that run was told to use -- so it holds regardless of where on disk a bug might have written to, not just within a temp folder the test happened to inspect afterward. Each script runs in-process (via `runpy`, same argv and entry point as the real CLI) so that interception can see every call; nothing about the scripts' own logic is mocked. A second, independent check snapshots the whole repo before and after and fails if anything in it changed at all. Only `--dir` mode is covered; `--album` mode's Photos-keyword write and osxphotos' own export aren't (no safe way to test against a real Photos library). Run from inside the project `venv`:
+
+```
+source venv/bin/activate
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python3 test_safety.py
+```
+
+The offline env vars matter once the CLIP model is already cached (which it will be after the first run): without them, `transformers` still does an online freshness check before using the cache, which turns into minutes of retries if huggingface.co is slow or unreachable.
+
+
