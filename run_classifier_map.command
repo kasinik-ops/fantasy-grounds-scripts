@@ -81,10 +81,14 @@ fi
 
 source venv/bin/activate
 echo "🔄 Verifying dependencies..."
-pip install --quiet --upgrade pip
-# osxphotos>=0.67 requires Python 3.10+ (uses `X | None` type syntax) and fails to
-# import at all on the 3.9 interpreter macOS ships by default -- pin below that.
-pip install --quiet torch transformers pillow pillow-heif "osxphotos<0.67"
+# No --upgrade here: that would hit the network on every single launch just to
+# check for a newer pip, which is the same kind of unnecessary always-on
+# network dependency classify_maps.py's own model-update check now avoids.
+# The venv's bundled pip is good enough. --default-timeout keeps this from
+# hanging if a package genuinely does need to be fetched with no connection.
+# osxphotos>=0.67 requires Python 3.10+ (uses `X | None` type syntax) and fails
+# to import at all on the 3.9 interpreter macOS ships by default -- pin below.
+pip install --quiet --default-timeout=10 torch transformers pillow pillow-heif "osxphotos<0.67"
 
 # 7. Run Python script with GUI inputs passed as flags
 echo "🚀 Starting classification..."

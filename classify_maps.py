@@ -2,6 +2,8 @@ import os
 import argparse
 import subprocess
 import shutil
+import json
+import time
 import torch
 import pillow_heif
 from PIL import Image
@@ -34,6 +36,15 @@ parser.add_argument("--no-move", action="store_true",
                      help="Classify only, don't move/export files into category folders")
 parser.add_argument("-y", "--yes", action="store_true",
                      help="Skip the move/export confirmation prompt")
+parser.add_argument("--check-update", action="store_true",
+                     help="Check Hugging Face for a newer CLIP model now, bypassing the "
+                          "24-hour throttle. Prompts before downloading (default: yes).")
+parser.add_argument("--force-update", action="store_true",
+                     help="Check for a newer CLIP model now and download it without prompting "
+                          "if one is found (bypasses the 24-hour throttle).")
+parser.add_argument("--no-update-check", action="store_true",
+                     help="Never check Hugging Face for a model update this run -- use "
+                          "whatever is already cached, fully offline. For limited/no internet.")
 args = parser.parse_args()
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -140,11 +151,120 @@ def resolve_move_root(args, image_count, is_apple_photos, source_dir):
 
     return move_root
 
-def run_classification(image_paths, is_apple_photos=False, unclassified_threshold=25.0, move_root=None):
+# --- CLIP MODEL UPDATE CHECK ---
+# This is the only network access this script makes once its pip dependencies
+# are installed. By default it's throttled to once per 24h (state persisted in
+# UPDATE_STATE_PATH) and, if an update is actually available, asks before
+# downloading it -- since transformers' own from_pretrained() would otherwise
+# silently hit the network on every single run just to check freshness, which
+# is slow to the point of minutes-long retries on a bad connection (see
+# --no-update-check for skipping this entirely).
+MODEL_ID = "openai/clip-vit-base-patch32"
+UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+UPDATE_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", ".model_update_check")
+REMOTE_CHECK_TIMEOUT_SECONDS = 5
+
+def _load_last_checked():
+    try:
+        with open(UPDATE_STATE_PATH) as f:
+            return json.load(f).get("last_checked", 0)
+    except (OSError, ValueError):
+        return 0
+
+def _save_last_checked(timestamp):
+    try:
+        os.makedirs(os.path.dirname(UPDATE_STATE_PATH), exist_ok=True)
+        with open(UPDATE_STATE_PATH, "w") as f:
+            json.dump({"last_checked": timestamp}, f)
+    except OSError:
+        pass  # best-effort -- worst case we just check again next run
+
+def _cached_model_revision():
+    """Commit hash of the CLIP model snapshot on the 'main' ref currently in
+    the local cache, or None if nothing is cached yet."""
+    from huggingface_hub import scan_cache_dir
+    try:
+        for repo in scan_cache_dir().repos:
+            if repo.repo_id == MODEL_ID:
+                for revision in repo.revisions:
+                    if "main" in revision.refs:
+                        return revision.commit_hash
+    except Exception:
+        pass
+    return None
+
+def _remote_model_revision():
+    """Commit hash of the CLIP model's current 'main' revision on Hugging
+    Face, or None if unreachable. A single bounded attempt (no retry storm --
+    unlike from_pretrained's own downloader), so this fails fast on a bad
+    connection instead of hanging."""
+    from huggingface_hub import HfApi
+    try:
+        return HfApi().model_info(MODEL_ID, timeout=REMOTE_CHECK_TIMEOUT_SECONDS).sha
+    except Exception:
+        return None
+
+def maybe_allow_online_model_check(check_update, force_update, no_update_check):
+    """Decides, respecting the 24-hour throttle and the CLI override flags,
+    whether this run may check Hugging Face for a CLIP model update -- and if
+    an update is found, prompts before allowing it (default yes) unless
+    --force-update already answered that for us. Returns True if the caller
+    should let from_pretrained() reach the network, False if it should be
+    forced offline (nothing new to fetch, throttled, skipped, or declined)."""
+    if no_update_check:
+        return False
+
+    due = (time.time() - _load_last_checked()) >= UPDATE_CHECK_INTERVAL_SECONDS
+    if not (check_update or force_update or due):
+        return False
+
+    local_rev = _cached_model_revision()
+    first_time = local_rev is None
+    print("🔎 No cached CLIP model yet -- checking Hugging Face..." if first_time
+          else "🔎 Checking Hugging Face for a CLIP model update...")
+    remote_rev = _remote_model_revision()
+    _save_last_checked(time.time())
+
+    if remote_rev is None:
+        if first_time:
+            print("   Could not reach Hugging Face, and no model is cached -- this will fail without a connection.")
+        else:
+            print("   Could not reach Hugging Face -- using the cached model.")
+        return False
+    if local_rev == remote_rev:
+        print("   Model is already up to date.")
+        return False
+
+    if not force_update:
+        prompt = "   No model is cached yet -- download it now?" if first_time else \
+                 "   A newer CLIP model is available -- download it?"
+        try:
+            answer = input(f"{prompt} [Y/n]: ").strip().lower()
+        except EOFError:
+            # No terminal to answer from (non-interactive/automated run) --
+            # decline rather than silently starting a download. This is NOT
+            # the same as a real Enter press, which does default to yes below.
+            answer = "n"
+        if answer not in ("", "y", "yes"):
+            print("   Skipping download." if first_time else "   Skipping update, using the cached model.")
+            return False
+
+    print("   Downloading model..." if first_time else "   Downloading updated model...")
+    return True
+
+def run_classification(image_paths, is_apple_photos=False, unclassified_threshold=25.0, move_root=None,
+                        check_update=False, force_update=False, no_update_check=False):
     print("\n--- Category Tagging (CLIP AI) ---")
-    model_id = "openai/clip-vit-base-patch32"
-    model = CLIPModel.from_pretrained(model_id).to(DEVICE)
-    processor = CLIPProcessor.from_pretrained(model_id)
+    model_id = MODEL_ID
+
+    # local_files_only is a genuine per-call argument, unlike HF_HUB_OFFLINE/
+    # TRANSFORMERS_OFFLINE -- those are plain module-level constants baked in
+    # from os.environ the moment huggingface_hub is first imported (which
+    # already happened at the top of this file), so setting them here would
+    # silently do nothing. local_files_only is what actually works.
+    allow_online = maybe_allow_online_model_check(check_update, force_update, no_update_check)
+    model = CLIPModel.from_pretrained(model_id, local_files_only=not allow_online).to(DEVICE)
+    processor = CLIPProcessor.from_pretrained(model_id, local_files_only=not allow_online)
 
     keywords = list(CATEGORIES.keys())
     prompts = list(CATEGORIES.values())
@@ -256,6 +376,9 @@ def main():
         image_paths, is_apple_photos,
         unclassified_threshold=args.unclassified_threshold,
         move_root=move_root,
+        check_update=args.check_update,
+        force_update=args.force_update,
+        no_update_check=args.no_update_check,
     )
 
 if __name__ == "__main__":

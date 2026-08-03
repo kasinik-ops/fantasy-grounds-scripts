@@ -52,6 +52,8 @@ Two independent scripts for organizing and prepping TTRPG battle maps. `classify
 
 Run `./run_classifier_map.command` and `./run_grid_detector.command` (double-clickable in Finder) for a guided, dialog-based version of everything below, or call the Python scripts directly for full control over every flag. Each launcher sets up its own `venv` and installs only the dependencies that script actually needs on first run. Supported image types: PNG, JPG/JPEG, WEBP, HEIC/HEIF. Windows support is planned but not implemented yet -- the launchers are Mac-only (`.command`/AppleScript); the Python scripts themselves don't depend on anything Mac-specific except the Apple Photos integration, which is inherently Mac-only.
 
+Everything here runs entirely offline once set up, aside from `classify_maps.py`'s CLIP model, which checks Hugging Face for an update at most once every 24 hours (see below) -- there's nothing else in either script that reaches the network. First-run dependency installation is the one other exception (installing torch/transformers/etc. into the `venv`), and even that doesn't hit the network again once satisfied.
+
 *classify_maps.py -- Categorize*
 
 Classifies each map into one of the categories below using zero-shot CLIP classification (no training/dataset needed):
@@ -65,6 +67,8 @@ Low-confidence matches are tagged `unclassified` instead of being forced into a 
 Classified files then get sorted: local-folder images are moved into category-named subfolders under a destination directory you're asked for; Apple Photos images are exported as classified copies into that destination (originals are left alone in Photos -- moving the real library file directly risks corrupting it) and also get the category written back as a Photos keyword on the original. Before moving/exporting anything, the script always prints how many files are affected and where, and asks for confirmation (`-y`/`--yes` to skip the prompt, `--no-move` to disable moving entirely, `--move-to <dir>` to set the destination without being asked).
 
 It only scans files sitting directly in the selected folder, not subdirectories -- so re-running it won't re-classify maps a previous run already sorted into category subfolders. `run_classifier_map.command` also shows an explanation of all this (with a link to open this README) before it does anything.
+
+Before loading the CLIP model, it checks Hugging Face for a newer version -- but at most once every 24 hours (state tracked in `venv/.model_update_check`), and only if actually due does it make that one bounded, short-timeout check. If a newer model is found, it asks before downloading it (default: yes); if nothing is due, or Hugging Face is unreachable, it silently uses whatever's already cached. `--check-update` forces that check right now regardless of the 24h throttle; `--force-update` forces it and skips the prompt if an update is found; `--no-update-check` skips the check entirely and uses the cached model -- the flag to reach for with no or limited connectivity.
 
 *detect_grid.py -- FGU Grid*
 
@@ -93,6 +97,9 @@ Neither script puts anything into Fantasy Grounds by itself -- that's a delibera
 | `--move-to DIR` | prompt | Destination for sorted/exported files |
 | `--no-move` | off | Classify only; don't move or export files |
 | `-y`, `--yes` | off | Skip the move/export confirmation prompt |
+| `--check-update` | off | Check Hugging Face for a model update now, bypassing the 24h throttle (still prompts) |
+| `--force-update` | off | Check now and download an update without prompting, if one is found |
+| `--no-update-check` | off | Skip the model-update check entirely; use whatever's cached (for limited/no internet) |
 
 `detect_grid.py`:
 
@@ -108,13 +115,13 @@ Neither script puts anything into Fantasy Grounds by itself -- that's a delibera
 
 **test_safety.py**
 
-Safety tests for `classify_maps.py` and `detect_grid.py`: checks that neither script does anything destructive beyond what's explicitly allowed (moving maps into category subfolders, creating/overwriting a map's `.xml` sidecar), and that neither ever overwrites an existing file without that being explicitly opted into (`-y` for moving, `-f`/`--force` for sidecar overwrite). This is a complete accounting, not a sample: every write-capable call either script uses (`shutil.move`, `os.makedirs`, `ET.ElementTree.write`, `open()` in a writing mode) is intercepted for the duration of each run, and every path touched is checked against the exact directories that run was told to use -- so it holds regardless of where on disk a bug might have written to, not just within a temp folder the test happened to inspect afterward. Each script runs in-process (via `runpy`, same argv and entry point as the real CLI) so that interception can see every call; nothing about the scripts' own logic is mocked. A second, independent check snapshots the whole repo before and after and fails if anything in it changed at all. Only `--dir` mode is covered; `--album` mode's Photos-keyword write and osxphotos' own export aren't (no safe way to test against a real Photos library). Run from inside the project `venv`:
+Safety tests for `classify_maps.py` and `detect_grid.py`: checks that neither script does anything destructive beyond what's explicitly allowed (moving maps into category subfolders, creating/overwriting a map's `.xml` sidecar), and that neither ever overwrites an existing file without that being explicitly opted into (`-y` for moving, `-f`/`--force` for sidecar overwrite). This is a complete accounting, not a sample: every write-capable call either script uses (`shutil.move`, `os.makedirs`, `ET.ElementTree.write`, `open()` in a writing mode) is intercepted for the duration of each run, and every path touched is checked against the exact directories that run was told to use -- so it holds regardless of where on disk a bug might have written to, not just within a temp folder the test happened to inspect afterward. Each script runs in-process (via `runpy`, same argv and entry point as the real CLI) so that interception can see every call; nothing about the scripts' own logic is mocked. A second, independent check snapshots the whole repo before and after and fails if anything in it changed at all. Only `--dir` mode is covered; `--album` mode's Photos-keyword write and osxphotos' own export aren't (no safe way to test against a real Photos library), and every `classify_maps.py` invocation passes `--no-update-check` so its model-update check is never exercised either. Run from inside the project `venv`:
 
 ```
 source venv/bin/activate
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python3 test_safety.py
+python3 test_safety.py
 ```
 
-The offline env vars matter once the CLIP model is already cached (which it will be after the first run): without them, `transformers` still does an online freshness check before using the cache, which turns into minutes of retries if huggingface.co is slow or unreachable.
+The very first run will be slow while `classify_maps.py` downloads the CLIP model; it's cached after that, and every test here passes `--no-update-check` so none of them re-trigger a freshness check against huggingface.co.
 
 

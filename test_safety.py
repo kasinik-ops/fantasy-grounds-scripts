@@ -37,27 +37,29 @@ As a second, independent layer, every run also snapshots the whole repo
 in it was added, removed, or modified -- these scripts have no legitimate
 reason to write into their own project directory, ever.
 
-Known gap: only --dir mode is exercised. --album mode's two side effects
-(the Photos-keyword AppleScript write, and osxphotos' own internal file
-export) aren't covered -- there's no sandboxed Photos library to safely test
-against, and intercepting a third-party library's internal writes would be
-far more fragile than the interception above.
+Known gaps:
+  - Only --dir mode is exercised. --album mode's two side effects (the
+    Photos-keyword AppleScript write, and osxphotos' own internal file
+    export) aren't covered -- there's no sandboxed Photos library to safely
+    test against, and intercepting a third-party library's internal writes
+    would be far more fragile than the interception above.
+  - Every classify_maps.py invocation here passes --no-update-check, so
+    classify_maps.py's own CLIP-model-update check (see its module docstring)
+    is never exercised -- that check's state-file write (venv/.model_update_
+    check) is legitimate application state, not a map-directory concern, and
+    --no-update-check is also the correct way to run this script in any
+    automated/CI-like context in the first place.
 
 Run from inside the project's venv (same one run_classifier_map.command and
 run_grid_detector.command set up), since these scripts' own dependencies
 (torch, transformers, opencv-python, ...) need to be installed:
 
     source venv/bin/activate
-    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python3 test_safety.py
+    python3 test_safety.py
 
 The very first run will be slow while classify_maps.py downloads the CLIP
-model; it's cached after that. The HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE env
-vars matter on every run after that first one: without them, transformers
-still does an online freshness check (a HEAD request per model file) before
-falling back to the cache, and if huggingface.co is slow or unreachable that
-turns into minutes of retries with backoff -- each of the four classify_maps
-tests pays that cost separately. With the model already cached, forcing
-offline mode skips the network entirely and each test runs in a few seconds.
+model; it's cached after that, and every test here passes --no-update-check
+so none of them re-trigger a freshness check against huggingface.co.
 """
 import builtins
 import io
@@ -287,7 +289,7 @@ def test_classify_no_move_leaves_everything_untouched():
         make_grid_image(img)
         before = read_bytes(img)
 
-        run_in_process("classify_maps.py", ["--dir", tmp, "--no-move"], allowed_roots=[tmp])
+        run_in_process("classify_maps.py", ["--dir", tmp, "--no-move", "--no-update-check"], allowed_roots=[tmp])
         check(all_files(tmp) == ["map.png"], "no files created or removed")
         check(read_bytes(img) == before, "image content unchanged")
 
@@ -301,8 +303,9 @@ def test_classify_declines_without_confirmation():
 
         # No --move-to, no -y, no stdin to answer the prompts with: both the
         # destination prompt and the confirmation prompt hit EOF, and the
-        # confirmation prompt's EOF is treated as "no".
-        run_in_process("classify_maps.py", ["--dir", tmp], allowed_roots=[tmp])
+        # confirmation prompt's EOF is treated as "no". --no-update-check is
+        # unrelated to this -- just keeps the test from touching the network.
+        run_in_process("classify_maps.py", ["--dir", tmp, "--no-update-check"], allowed_roots=[tmp])
         check(all_files(tmp) == ["map.png"], "no files created or removed")
         check(read_bytes(img) == before, "image content unchanged")
 
@@ -327,7 +330,7 @@ def test_classify_move_is_lossless_and_collision_safe():
         # exactly which subfolder the mover will target.
         run_in_process("classify_maps.py", [
             "--dir", tmp, "--move-to", tmp, "-y",
-            "--unclassified-threshold", "999",
+            "--unclassified-threshold", "999", "--no-update-check",
         ], allowed_roots=[tmp])
         check(not os.path.exists(img), "original location no longer has the file (it moved)")
         check(read_bytes(collision_path) == sentinel_bytes, "pre-existing file at the natural destination is untouched")
@@ -351,7 +354,7 @@ def test_classify_moves_sidecar_with_image():
 
         run_in_process("classify_maps.py", [
             "--dir", tmp, "--move-to", tmp, "-y",
-            "--unclassified-threshold", "999",
+            "--unclassified-threshold", "999", "--no-update-check",
         ], allowed_roots=[tmp])
         check(not os.path.exists(sidecar), "sidecar no longer at the old location")
         new_sidecar = os.path.join(tmp, "unclassified", "map.xml")
@@ -382,7 +385,7 @@ def test_classify_move_to_different_tree_only_touches_both_named_dirs():
 
         run_in_process("classify_maps.py", [
             "--dir", source_dir, "--move-to", dest_dir, "-y",
-            "--unclassified-threshold", "999",
+            "--unclassified-threshold", "999", "--no-update-check",
         ], allowed_roots=[source_dir, dest_dir])
         check(read_bytes(decoy_file) == decoy_bytes, "unrelated sibling directory completely untouched")
         check(all_files(source_dir) == [], "source directory is empty after the move")

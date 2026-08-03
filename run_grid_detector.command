@@ -88,8 +88,11 @@ fi
 
 source venv/bin/activate
 echo "🔄 Verifying dependencies..."
-pip install --quiet --upgrade pip
-pip install --quiet pillow pillow-heif opencv-python numpy "osxphotos<0.67"
+# No --upgrade here: that would hit the network on every single launch just to
+# check for a newer pip. The venv's bundled pip is good enough.
+# --default-timeout keeps this from hanging if a package genuinely does need
+# to be fetched with no connection.
+pip install --quiet --default-timeout=10 pillow pillow-heif opencv-python numpy "osxphotos<0.67"
 
 # 7. Run Python script with GUI inputs passed as flags
 echo "🚀 Starting grid detection..."
