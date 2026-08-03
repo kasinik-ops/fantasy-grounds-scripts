@@ -1,24 +1,20 @@
 Overview
-This repo is for scripts for Fantasy grounds. it is intended for my personal use but you are welcome to use them as you see fit. They have NO WARRANTY.
+This repo is for scripts for Fantasy grounds. It is intended for my personal use but you are welcome to use them as you see fit. They have NO WARRANTY.
+
+*Disclaimer*
+This code was created by AI. The safety scripts attempt to test for destructive changes, so they should be safe to run. The exception is `fix_fantasygrounds.sh` which is explictly dangerous to run.
 
 
 **fgu_maptest.py**
 
-This script checks map files for issues which may cause performance issues and gives recommendations. It is read-only. Example outout is in the image in this repo.
+This script checks maps for issues which may cause performance issues and gives recommendations on problematic maps. It is read-only. Example output is in the image in this repo.
 
-**fgu_telemetry.py**
-
-This script captures Mac OS X system telemetry to help analysing map performance. It was used to generate the heuristics on map performance used in fgu_maptest.py
-
-**fgu_telemetry_analyze.py**
-
-This analyses the telemetry captured by fgu_telemetry.py
 
 **fix_fantasygrounds.sh**
 
-This script is a maintenance tool designed to resolve persistent crashing, update, and preference issues for Fantasy Grounds Unity on macOS. It performs a "Deep Clean" by purging memory-cached preferences and re-installing the application.
+This script is a maintenance tool designed to resolve persistent crashing, update, and preference issues for Fantasy Grounds Unity on MacOS X. It performs a "Deep Clean" by purging memory-cached preferences and re-installing the application.
 
-Data Safety: The script creates a backup in `~/FGBACKUP`. However, always maintain a secondary manual backup of your `campaigns` folder. Backing up your campaigns is YOUR responsibility.
+Data Safety Disclaimer: THIS DELETES DATA. The script attempts to create a campaign backup in `~/FGBACKUP`. However, always maintain a secondary manual backup of your `campaigns` folder. Backing up your campaigns is YOUR responsibility. 
 
 Key Issues Addressed
 This script specifically targets the following known macOS-specific problems:
@@ -39,53 +35,22 @@ The Issue: Corrupted `.conf` files in the Library folder can prevent the updater
 
 The Issue: Security updates or interrupted downloads can strip the "executable" bit from the app, making it unlaunchable. The Fix: A scripted reinstall via the official `.pkg` ensures all file permissions are set correctly by the macOS installer.
 
-Disclaimer & Safety
-• Warranty: Provided "as-is" without warranty.
 
-• Data Safety: The script creates a backup in `~/FGBACKUP`. However, always maintain a secondary manual backup of your `campaigns` folder.
+**classify_maps.py**
 
-• Reboot Required: You must reboot after the script finishes to ensure the system cache is fully cleared.
+This uses classifies RPG battlemaps into kinds to make grabbing the right map before a session easier. Windows support is planned but not implemented yet.
 
-**classify_maps.py / detect_grid.py**
+On Mac OS X `./run_classifier_map.command` from the terminal (or double-click on it in the Mac OS X Finder) for a guided, dialog-based version of everything below, or call classify_maps.py directly for full control over every flag. The input can either be files in a folder or photos in an Apple photos album.
 
-Two independent scripts for organizing and prepping TTRPG battle maps. `classify_maps.py` uses CLIP (an AI image classifier) to sort maps into categories; `detect_grid.py` detects each map's grid and writes a Fantasy Grounds Unity sidecar XML file for it. They used to be one script with a `--pass` flag; they're now split so each can be run, packaged, and (eventually) ported to Windows independently. Both work against either a local folder of images or an Apple Photos album.
-
-Run `./run_classifier_map.command` and `./run_grid_detector.command` (double-clickable in Finder) for a guided, dialog-based version of everything below, or call the Python scripts directly for full control over every flag. Each launcher sets up its own `venv` and installs only the dependencies that script actually needs on first run. Supported image types: PNG, JPG/JPEG, WEBP, HEIC/HEIF. Windows support is planned but not implemented yet -- the launchers are Mac-only (`.command`/AppleScript); the Python scripts themselves don't depend on anything Mac-specific except the Apple Photos integration, which is inherently Mac-only.
-
-Everything here runs entirely offline once set up, aside from `classify_maps.py`'s CLIP model, which checks Hugging Face for an update at most once every 24 hours (see below) -- there's nothing else in either script that reaches the network. First-run dependency installation is the one other exception (installing torch/transformers/etc. into the `venv`), and even that doesn't hit the network again once satisfied.
-
-*classify_maps.py -- Categorize*
-
-Classifies each map into one of the categories below using zero-shot CLIP classification (no training/dataset needed):
+Classifies each map (PNG, JPG/JPEG, WEBP, HEIC/HEIF.) into one of the categories below using zero-shot CLIP classification (no training/dataset needed):
 
 - **indoors**: castle&fort&tower, cave, church, crypt, dungeon, inn&house, manor, modern, scifi, unclassified
 - **outdoors**: camp, castle&fort&tower, overgrowth, planar, regional, ruin, scifi, ship, site of interest, trail&bridge&travel, urban&town&city, village&rural, water&coast, wilderness
-- **other**: map scenes, unclassified
+- **other**: map scenes, unclassified (for matches below the confience threshold, by default this is 25%)
 
-Low-confidence matches are tagged `unclassified` instead of being forced into a poorly-fitting category (`--unclassified-threshold`, default 25%) -- CLIP always returns its best guess even when nothing really fits.
+The maps are then MOVED into category-named subfolders.  Apple Photos images are exported as classified copies into that destination (originals are left alone in Photos) and also get the category written back as a Photos keyword on the original.
 
-Classified files then get sorted: local-folder images are moved into category-named subfolders under a destination directory you're asked for; Apple Photos images are exported as classified copies into that destination (originals are left alone in Photos -- moving the real library file directly risks corrupting it) and also get the category written back as a Photos keyword on the original. Before moving/exporting anything, the script always prints how many files are affected and where, and asks for confirmation (`-y`/`--yes` to skip the prompt, `--no-move` to disable moving entirely, `--move-to <dir>` to set the destination without being asked).
-
-It only scans files sitting directly in the selected folder, not subdirectories -- so re-running it won't re-classify maps a previous run already sorted into category subfolders. `run_classifier_map.command` also shows an explanation of all this (with a link to open this README) before it does anything.
-
-Before loading the CLIP model, it checks Hugging Face for a newer version -- but at most once every 24 hours (state tracked in `venv/.model_update_check`), and only if actually due does it make that one bounded, short-timeout check. If a newer model is found, it asks before downloading it (default: yes); if nothing is due, or Hugging Face is unreachable, it silently uses whatever's already cached. `--check-update` forces that check right now regardless of the 24h throttle; `--force-update` forces it and skips the prompt if an update is found; `--no-update-check` skips the check entirely and uses the cached model -- the flag to reach for with no or limited connectivity.
-
-*detect_grid.py -- FGU Grid*
-
-Detects each map's grid (square size + pixel offset) straight from the image -- no manual measuring. Writes a sidecar XML next to the image, with the image's extension swapped for `.xml` (`map.png` -> `map.xml`, not `map.png.xml`), matching the convention `fgu_maptest.py` and the uvtt2fgu reference tool both expect: `<gridsize>` is a verified Fantasy Grounds Unity sidecar field; `<gridoffset>` is a best-effort guess that hasn't been confirmed as something FGU actually reads, so test-import one map and check the grid lines up before trusting it across a whole library.
-
-Unlike `classify_maps.py`, this scans recursively (including category subfolders), so it can reach maps already sorted into them. It skips images that already have a sidecar XML by default, to avoid clobbering hand-tuned values (`-f`/`--force` to overwrite instead). Detected grids are also rejected unless the candidate lines actually span most of the image, not just look periodic in aggregate -- this stops photos with repeating texture (railings, decking, portholes) from being scored as if they had a real drawn battle-map grid.
-
-*Getting a map into Fantasy Grounds*
-
-Neither script puts anything into Fantasy Grounds by itself -- that's a deliberate manual step, not automated by this pipeline, since a library can run into the thousands of files and you only want a handful in any given campaign. `run_grid_detector.command` shows the full explanation (with a link to open this README) before it does anything; the short version:
-
-1. Copy the map image and its matching `.xml` (same base filename, e.g. `map.png` + `map.xml`) into your campaign's `images/` folder (flat, not in a subfolder).
-2. In Fantasy Grounds: sidebar -> Library -> Assets -> Images, then click **Refresh Folder Assets** (bottom right) so it notices the new files. That same panel has a link (bottom right) that opens the images folder in Finder, handy for copying files over.
-3. Click the image, then click **Create Image Record**.
-4. In the opened map, click **Grid**, then click the eye icon to make the grid visible.
-
-*Command-line flags*
+It only scans files sitting directly in the selected folder, not subdirectories so re-running it won't re-classify maps a previous run already sorted into category subfolders.
 
 `classify_maps.py`:
 
@@ -101,6 +66,13 @@ Neither script puts anything into Fantasy Grounds by itself -- that's a delibera
 | `--force-update` | off | Check now and download an update without prompting, if one is found |
 | `--no-update-check` | off | Skip the model-update check entirely; use whatever's cached (for limited/no internet) |
 
+
+**detect_grid.py**
+
+Detects if a grid exists (square grids only supported) on each image, and if it exists, creates a fantasy grounds compatible xml file with the grid pattern.
+
+Unlike `classify_maps.py`, this scans recursively (including category subfolders), so it can reach maps already sorted into them by `classify_maps.py`. 
+
 `detect_grid.py`:
 
 | Flag | Default | Purpose |
@@ -113,9 +85,32 @@ Neither script puts anything into Fantasy Grounds by itself -- that's a delibera
 | `--grid-min-confidence` | `0.15` | Minimum autocorrelation confidence (0-1) before reporting "no grid" |
 | `--grid-min-line-coverage` | `0.5` | Minimum fraction (0-1) of the image a candidate grid line must actually span to count as real |
 
+**Getting a map into Fantasy Grounds**
+
+Neither `classify_map.py or` or `detect_grid.py` puts anything into Fantasy Grounds by itself as library can run into the thousands of files. To move the maps over:
+
+1. Copy the map image and if it exists also the matching `.xml` (same base filename, e.g. `map.png` + `map.xml`) into your campaign's `images/` folder (flat, not in a subfolder).
+2. In Fantasy Grounds: sidebar -> Library -> Assets -> Images, then click **Refresh Folder Assets** (bottom right) so it notices the new files. That same panel has a link (bottom right) that opens the images folder in Finder, handy for copying files over.
+3. Click the image, then click **Create Image Record**.
+4. In the opened map, click **Grid**, then click the eye icon to make the grid visible.
+
+
+
+*Support scripts*
+
+These scripts are for supporting purposes. You probably don't need to run these.
+
+**fgu_telemetry.py**
+
+This script captures Mac OS X system telemetry to help analysing map performance. It was used to generate the heuristics on map performance used in fgu_maptest.py
+
+**fgu_telemetry_analyze.py**
+
+This analyses the telemetry captured by fgu_telemetry.py
+
 **test_safety.py**
 
-Safety tests for `classify_maps.py` and `detect_grid.py`: checks that neither script does anything destructive beyond what's explicitly allowed (moving maps into category subfolders, creating/overwriting a map's `.xml` sidecar), and that neither ever overwrites an existing file without that being explicitly opted into (`-y` for moving, `-f`/`--force` for sidecar overwrite). This is a complete accounting, not a sample: every write-capable call either script uses (`shutil.move`, `os.makedirs`, `ET.ElementTree.write`, `open()` in a writing mode) is intercepted for the duration of each run, and every path touched is checked against the exact directories that run was told to use -- so it holds regardless of where on disk a bug might have written to, not just within a temp folder the test happened to inspect afterward. Each script runs in-process (via `runpy`, same argv and entry point as the real CLI) so that interception can see every call; nothing about the scripts' own logic is mocked. A second, independent check snapshots the whole repo before and after and fails if anything in it changed at all. Only `--dir` mode is covered; `--album` mode's Photos-keyword write and osxphotos' own export aren't (no safe way to test against a real Photos library), and every `classify_maps.py` invocation passes `--no-update-check` so its model-update check is never exercised either. Run from inside the project `venv`:
+Safety tests for `classify_maps.py` and `detect_grid.py`: checks that neither script does anything destructive beyond what's explicitly allowed (moving maps into category subfolders, creating/overwriting a map's `.xml` sidecar), and that neither ever overwrites an existing file without that being explicitly opted into (`-y` for moving, `-f`/`--force` for sidecar overwrite). Every write-capable call either script uses is intercepted for the duration of each run, and every path touched is checked against the exact directories that run was told to use Each script runs in-process so that interception can see every call; nothing about the scripts' own logic is mocked. A second, independent check snapshots the whole repo before and after and fails if anything in it changed at all. Only `--dir` mode is covered; `--album` mode's Photos-keyword write and osxphotos' own export aren't (no safe way to test against a real Photos library), and every `classify_maps.py` invocation passes `--no-update-check` so its model-update check is never exercised either. Run from inside the project `venv`:
 
 ```
 source venv/bin/activate
@@ -123,5 +118,6 @@ python3 test_safety.py
 ```
 
 The very first run will be slow while `classify_maps.py` downloads the CLIP model; it's cached after that, and every test here passes `--no-update-check` so none of them re-trigger a freshness check against huggingface.co.
+
 
 
