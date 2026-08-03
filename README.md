@@ -1,9 +1,12 @@
 Overview
 This repo is for scripts for Fantasy grounds. It is intended for my personal use but you are welcome to use them as you see fit. They have NO WARRANTY.
 
-*Disclaimer*
-This code was created by AI. The safety scripts attempt to test for destructive changes, so they should be safe to run. The exception is `fix_fantasygrounds.sh` which is explictly dangerous to run.
+Claude (sonnet 5 and opus 4.8 extra) and Gemini (3.1 pro, 3.5 flash, 3.6 flash) were used to develop the scripts. They were lightly code reviewed by a human.
 
+
+**fgu_maptest.py**
+
+This script checks map files for issues which may cause performance issues and gives recommendations. It is read-only. Example output is in the image in this repo.
 
 **fgu_maptest.py**
 
