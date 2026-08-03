@@ -68,13 +68,13 @@ Pass 1 only scans files sitting directly in the selected folder, not subdirector
 
 *Pass 2: FGU Grid*
 
-Detects each map's grid (square size + pixel offset) straight from the image -- no manual measuring. Writes `<mapfile>.xml` next to the image: `<gridsize>` is a verified Fantasy Grounds Unity sidecar field (cross-checked against the [Imagix/uvtt2fgu](https://github.com/Imagix/uvtt2fgu) reference tool); `<gridoffset>` is a best-effort guess that hasn't been confirmed as something FGU actually reads, so test-import one map and check the grid lines up before trusting it across a whole library.
+Detects each map's grid (square size + pixel offset) straight from the image -- no manual measuring. Writes a sidecar XML next to the image, with the image's extension swapped for `.xml` (`map.png` -> `map.xml`, not `map.png.xml`), matching the convention `fgu_maptest.py` and the uvtt2fgu reference tool both expect: `<gridsize>` is a verified Fantasy Grounds Unity sidecar field; `<gridoffset>` is a best-effort guess that hasn't been confirmed as something FGU actually reads, so test-import one map and check the grid lines up before trusting it across a whole library.
 
 Unlike Pass 1, this scans recursively (including category subfolders), so it can reach maps Pass 1 already sorted. It skips images that already have a sidecar XML by default, to avoid clobbering hand-tuned values (`-f`/`--force` to overwrite instead). Detected grids are also rejected unless the candidate lines actually span most of the image, not just look periodic in aggregate -- this stops photos with repeating texture (railings, decking, portholes) from being scored as if they had a real drawn battle-map grid.
 
 *Getting a classified map into Fantasy Grounds*
 
-Sidecar XML only takes effect once both the image and its `.xml` are copied into your campaign's `images/` folder (flat, not in a subfolder), keeping the same filename. This is a deliberate manual step, not automated by this pipeline, since a library can run into the thousands of files. Once copied, import the image into FGU as normal and check the grid.
+Sidecar XML only takes effect once both the image and its matching `.xml` (same base filename, e.g. `map.png` + `map.xml`) are copied into your campaign's `images/` folder (flat, not in a subfolder). This is a deliberate manual step, not automated by this pipeline, since a library can run into the thousands of files. Once copied, import the image into FGU as normal and check the grid.
 
 *Command-line flags*
 

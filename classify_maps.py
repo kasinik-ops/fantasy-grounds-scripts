@@ -78,6 +78,13 @@ CATEGORIES = {
     "outdoors, wilderness": "a top-down TTRPG battle map of outdoor wilderness, forest, or untamed nature",
 }
 
+def _sidecar_path(image_path):
+    """FGU sidecar path for image_path: same directory and base filename, with the
+    image's own extension replaced by .xml (map.png -> map.xml) -- NOT map.png.xml.
+    Matches the convention fgu_maptest.py's scan_sidecars() and the uvtt2fgu
+    reference tool both expect."""
+    return os.path.splitext(image_path)[0] + ".xml"
+
 # --- PASS 1: CLIP CATEGORIZATION + SORT-BY-CATEGORY ---
 def _unique_path(dest_path):
     """dest_path if free, otherwise the same path with ' (2)', ' (3)', ... inserted
@@ -94,14 +101,13 @@ def _unique_path(dest_path):
 
 def move_image_and_sidecar(image_path, dest_dir):
     """Move image_path into dest_dir (collision-safe), bringing along its FGU grid
-    sidecar XML (<image_path>.xml, written by Pass 2) if one exists, so the sidecar
-    doesn't end up orphaned pointing at a file that's no longer there. Returns the
-    image's new path."""
+    sidecar XML (written by Pass 2) if one exists, so the sidecar doesn't end up
+    orphaned pointing at a file that's no longer there. Returns the image's new path."""
     dest_image_path = _unique_path(os.path.join(dest_dir, os.path.basename(image_path)))
-    src_sidecar = f"{image_path}.xml"
+    src_sidecar = _sidecar_path(image_path)
     shutil.move(image_path, dest_image_path)
     if os.path.exists(src_sidecar):
-        shutil.move(src_sidecar, f"{dest_image_path}.xml")
+        shutil.move(src_sidecar, _sidecar_path(dest_image_path))
     return dest_image_path
 
 def resolve_move_root(args, image_count, is_apple_photos, source_dir):
@@ -345,7 +351,7 @@ def detect_grid(image_path, min_grid_px=20, max_grid_fraction=0.25, min_confiden
 def write_grid_sidecar(image_path, spacing_x, spacing_y, offset_x, offset_y):
     """Create or update the FGU sidecar XML next to image_path with the detected
     grid. Preserves any existing content (e.g. occluders/lights) already there."""
-    xml_path = f"{image_path}.xml"
+    xml_path = _sidecar_path(image_path)
     root = None
     if os.path.exists(xml_path):
         try:
@@ -373,7 +379,8 @@ def run_pass_2(image_paths, force=False, min_grid_px=20, max_grid_fraction=0.25,
     print("\n--- Running Pass 2: Fantasy Grounds Grid Alignment ---")
     detected_any = False
     for idx, (path, _, _) in enumerate(image_paths, start=1):
-        if os.path.exists(f"{path}.xml") and not force:
+        sidecar = _sidecar_path(path)
+        if os.path.exists(sidecar) and not force:
             print(f"[{idx}/{len(image_paths)}] {os.path.basename(path)} -> Sidecar already exists, skipped (use -f to overwrite).")
             continue
         result = detect_grid(
@@ -389,7 +396,7 @@ def run_pass_2(image_paths, force=False, min_grid_px=20, max_grid_fraction=0.25,
         print(
             f"[{idx}/{len(image_paths)}] {os.path.basename(path)} -> "
             f"grid {spacing_x}x{spacing_y}px, offset ({offset_x:+.1f}, {offset_y:+.1f})px from center "
-            f"(confidence {confidence * 100:.0f}%) -> wrote {os.path.basename(path)}.xml"
+            f"(confidence {confidence * 100:.0f}%) -> wrote {os.path.basename(sidecar)}"
         )
 
     if detected_any:
