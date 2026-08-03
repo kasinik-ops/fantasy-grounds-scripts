@@ -25,11 +25,11 @@ The Issue: macOS uses a background service (`cfprefsd`) that caches `.plist` fil
 
 2. Resolution & Window Crash (Retina Displays)
 
-The Issue: On M1/M2/M3 Macs, the Unity engine can occasionally save an invalid window resolution (e.g., thousands of pixels wide), causing an immediate crash on launch. The Fix: Resetting `com.SmiteWorks.FantasyGrounds.plist` restores the default window size. Reference: [Fantasy Grounds Forums - Mac Crash Discussion]([suspicious link removed])
+The Issue: On M1/M2/M3 Macs, the Unity engine can occasionally save an invalid window resolution (e.g., thousands of pixels wide), causing an immediate crash on launch. The Fix: Resetting `com.SmiteWorks.FantasyGrounds.plist` restores the default window size.
 
 3. Stuck Updates & Login Failures
 
-The Issue: Corrupted `.conf` files in the Library folder can prevent the updater from connecting or saving your license key. The Fix: Deleting `fglauncher.conf` and `fguser.conf` forces a fresh authentication. Reference: [Fantasy Grounds Wiki - Troubleshooting]([suspicious link removed])
+The Issue: Corrupted `.conf` files in the Library folder can prevent the updater from connecting or saving your license key. The Fix: Deleting `fglauncher.conf` and `fguser.conf` forces a fresh authentication.
 
 4. Permission Errors (Broken Executable)
 
