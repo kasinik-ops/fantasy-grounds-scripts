@@ -113,7 +113,7 @@ Safety tests for `fgu_classify_maps.py` and `fgu_detect_grid.py`: checks that ne
 
 ```
 source venv/bin/activate
-python3 test_support_safety.py
+python3 fgu_support_test_.py
 ```
 
 The very first run will be slow while `fgu_classify_maps.py` downloads the CLIP model; it's cached after that, and every test here passes `--no-update-check` so none of them re-trigger a freshness check against huggingface.co.
