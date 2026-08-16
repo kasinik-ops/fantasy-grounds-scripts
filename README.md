@@ -1,4 +1,4 @@
-Overview
+*Overview*
 This repo is for scripts for Fantasy grounds. It is intended for my personal use but you are welcome to use them as you see fit. They have NO WARRANTY.
 
 Claude (sonnet 5 and opus 4.8 extra) and Gemini (3.1 pro, 3.5 flash, 3.6 flash) were used to develop the scripts. They were lightly code reviewed by a human.
@@ -113,7 +113,7 @@ Safety tests for `fgu_classify_maps.py` and `fgu_detect_grid.py`: checks that ne
 
 ```
 source venv/bin/activate
-python3 fgu_support_test_.py
+python3 fgu_support_test_safety.py
 ```
 
 The very first run will be slow while `fgu_classify_maps.py` downloads the CLIP model; it's cached after that, and every test here passes `--no-update-check` so none of them re-trigger a freshness check against huggingface.co.
