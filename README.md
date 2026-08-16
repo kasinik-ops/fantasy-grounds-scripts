@@ -39,7 +39,7 @@ The Issue: Security updates or interrupted downloads can strip the "executable" 
 
 This uses classifies RPG battlemaps into kinds to make grabbing the right map before a session easier. Windows support is planned but not implemented yet.
 
-On Mac OS X `./run_classifier_map.command` from the terminal (or double-click on it in the Mac OS X Finder) for a guided, dialog-based version of everything below, or call classify_maps.py directly for full control over every flag. The input can either be files in a folder or photos in an Apple photos album.
+On Mac OS X `./run_classifier_map.command` from the terminal (or double-click on it in the Mac OS X Finder) for a guided, dialog-based version of everything below, or call fgu_classify_maps.py directly for full control over every flag. The input can either be files in a folder or photos in an Apple photos album.
 
 Classifies each map (PNG, JPG/JPEG, WEBP, HEIC/HEIF.) into one of the categories below using zero-shot CLIP classification (no training/dataset needed):
 
@@ -70,7 +70,7 @@ It only scans files sitting directly in the selected folder, not subdirectories 
 
 Detects if a grid exists (square grids only supported) on each image, and if it exists, creates a fantasy grounds compatible xml file with the grid pattern.
 
-Unlike `classify_maps.py`, this scans recursively (including category subfolders), so it can reach maps already sorted into them by `classify_maps.py`. 
+Unlike `fgu_classify_maps.py`, this scans recursively (including category subfolders), so it can reach maps already sorted into them by `fgu_classify_maps.py`. 
 
 `fgu_detect_grid.py`:
 
@@ -113,7 +113,7 @@ Safety tests for `fgu_classify_maps.py` and `fgu_detect_grid.py`: checks that ne
 
 ```
 source venv/bin/activate
-python3 test_support_safety.py
+python3 fgu_support_test_.py
 ```
 
 The very first run will be slow while `fgu_classify_maps.py` downloads the CLIP model; it's cached after that, and every test here passes `--no-update-check` so none of them re-trigger a freshness check against huggingface.co.
