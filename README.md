@@ -6,14 +6,10 @@ Claude (sonnet 5 and opus 4.8 extra) and Gemini (3.1 pro, 3.5 flash, 3.6 flash) 
 
 **fgu_maptest.py**
 
-This script checks map files for issues which may cause performance issues and gives recommendations. It is read-only. Example output is in the image in this repo.
-
-**fgu_maptest.py**
-
 This script checks maps for issues which may cause performance issues and gives recommendations on problematic maps. It is read-only. Example output is in the image in this repo.
 
 
-**fix_fantasygrounds.sh**
+**fgu_fix_macos.sh**
 
 This script is a maintenance tool designed to resolve persistent crashing, update, and preference issues for Fantasy Grounds Unity on MacOS X. It performs a "Deep Clean" by purging memory-cached preferences and re-installing the application.
 
@@ -39,7 +35,7 @@ The Issue: Corrupted `.conf` files in the Library folder can prevent the updater
 The Issue: Security updates or interrupted downloads can strip the "executable" bit from the app, making it unlaunchable. The Fix: A scripted reinstall via the official `.pkg` ensures all file permissions are set correctly by the macOS installer.
 
 
-**classify_maps.py**
+**fgu_classify_maps.py**
 
 This uses classifies RPG battlemaps into kinds to make grabbing the right map before a session easier. Windows support is planned but not implemented yet.
 
@@ -55,7 +51,7 @@ The maps are then MOVED into category-named subfolders.  Apple Photos images are
 
 It only scans files sitting directly in the selected folder, not subdirectories so re-running it won't re-classify maps a previous run already sorted into category subfolders.
 
-`classify_maps.py`:
+`fgu_classify_maps.py`:
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
@@ -70,13 +66,13 @@ It only scans files sitting directly in the selected folder, not subdirectories 
 | `--no-update-check` | off | Skip the model-update check entirely; use whatever's cached (for limited/no internet) |
 
 
-**detect_grid.py**
+**fgu_detect_grid.py**
 
 Detects if a grid exists (square grids only supported) on each image, and if it exists, creates a fantasy grounds compatible xml file with the grid pattern.
 
 Unlike `classify_maps.py`, this scans recursively (including category subfolders), so it can reach maps already sorted into them by `classify_maps.py`. 
 
-`detect_grid.py`:
+`fgu_detect_grid.py`:
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
@@ -90,7 +86,7 @@ Unlike `classify_maps.py`, this scans recursively (including category subfolders
 
 **Getting a map into Fantasy Grounds**
 
-Neither `classify_map.py or` or `detect_grid.py` puts anything into Fantasy Grounds by itself as library can run into the thousands of files. To move the maps over:
+Neither `fgu_classify_map.py or` or `fgu_detect_grid.py` puts anything into Fantasy Grounds by itself as library can run into the thousands of files. To move the maps over:
 
 1. Copy the map image and if it exists also the matching `.xml` (same base filename, e.g. `map.png` + `map.xml`) into your campaign's `images/` folder (flat, not in a subfolder).
 2. In Fantasy Grounds: sidebar -> Library -> Assets -> Images, then click **Refresh Folder Assets** (bottom right) so it notices the new files. That same panel has a link (bottom right) that opens the images folder in Finder, handy for copying files over.
@@ -103,24 +99,24 @@ Neither `classify_map.py or` or `detect_grid.py` puts anything into Fantasy Grou
 
 These scripts are for supporting purposes. You probably don't need to run these.
 
-**fgu_telemetry.py**
+**fgu_support_telemetry.py**
 
-This script captures Mac OS X system telemetry to help analysing map performance. It was used to generate the heuristics on map performance used in fgu_maptest.py
+This script captures Mac OS X system telemetry to help analysing map performance. It was used to generate the heuristics on map performance used in fgu_support_maptest.py
 
-**fgu_telemetry_analyze.py**
+**fgu_support_telemetry_analyze.py**
 
-This analyses the telemetry captured by fgu_telemetry.py
+This analyses the telemetry captured by fgu_support_telemetry.py
 
-**test_safety.py**
+**fgu_support_test_safety.py**
 
-Safety tests for `classify_maps.py` and `detect_grid.py`: checks that neither script does anything destructive beyond what's explicitly allowed (moving maps into category subfolders, creating/overwriting a map's `.xml` sidecar), and that neither ever overwrites an existing file without that being explicitly opted into (`-y` for moving, `-f`/`--force` for sidecar overwrite). Every write-capable call either script uses is intercepted for the duration of each run, and every path touched is checked against the exact directories that run was told to use Each script runs in-process so that interception can see every call; nothing about the scripts' own logic is mocked. A second, independent check snapshots the whole repo before and after and fails if anything in it changed at all. Only `--dir` mode is covered; `--album` mode's Photos-keyword write and osxphotos' own export aren't (no safe way to test against a real Photos library), and every `classify_maps.py` invocation passes `--no-update-check` so its model-update check is never exercised either. Run from inside the project `venv`:
+Safety tests for `fgu_classify_maps.py` and `fgu_detect_grid.py`: checks that neither script does anything destructive beyond what's explicitly allowed (moving maps into category subfolders, creating/overwriting a map's `.xml` sidecar), and that neither ever overwrites an existing file without that being explicitly opted into (`-y` for moving, `-f`/`--force` for sidecar overwrite). Every write-capable call either script uses is intercepted for the duration of each run, and every path touched is checked against the exact directories that run was told to use Each script runs in-process so that interception can see every call; nothing about the scripts' own logic is mocked. A second, independent check snapshots the whole repo before and after and fails if anything in it changed at all. Only `--dir` mode is covered; `--album` mode's Photos-keyword write and osxphotos' own export aren't (no safe way to test against a real Photos library), and every `fgu_classify_maps.py` invocation passes `--no-update-check` so its model-update check is never exercised either. Run from inside the project `venv`:
 
 ```
 source venv/bin/activate
-python3 test_safety.py
+python3 test_support_safety.py
 ```
 
-The very first run will be slow while `classify_maps.py` downloads the CLIP model; it's cached after that, and every test here passes `--no-update-check` so none of them re-trigger a freshness check against huggingface.co.
+The very first run will be slow while `fgu_classify_maps.py` downloads the CLIP model; it's cached after that, and every test here passes `--no-update-check` so none of them re-trigger a freshness check against huggingface.co.
 
 
 
