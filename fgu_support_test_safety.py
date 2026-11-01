@@ -71,6 +71,7 @@ model; it's cached after that, and every test here passes --no-update-check
 so none of them re-trigger a freshness check against huggingface.co.
 """
 import builtins
+import getpass
 import io
 import os
 import re
@@ -161,12 +162,18 @@ def assert_repo_untouched(before, after):
 # Narrow, explicit, and justified: writes made by third-party libraries these
 # scripts depend on, not by fgu_classify_maps.py's or fgu_detect_grid.py's own logic
 # (neither imports tempfile, and neither references the HF cache directly --
-# grep the source if in doubt). Anything not matching one of these two is
-# still checked against allowed_roots as normal.
+# grep the source if in doubt). Anything not matching one of these is still
+# checked against allowed_roots as normal.
 IGNORE_WRITE_ROOTS = [
     # transformers/huggingface_hub's own CLIP model download cache -- a
     # read-only model artifact, not user data.
     os.path.realpath(os.path.expanduser("~/.cache/huggingface")),
+    # PyTorch's own compile cache, <system temp>/torchinductor_<user>. Newer
+    # torch creates it just by being imported, which is why it never showed up
+    # on an older local install and first appeared in CI (macOS and Windows
+    # alike). An exact path rather than a pattern, so it can't hide a real
+    # stray write elsewhere in the temp folder.
+    os.path.realpath(os.path.join(tempfile.gettempdir(), "torchinductor_" + getpass.getuser())),
 ]
 IGNORE_WRITE_BASENAMES = {
     # A one-time JIT scaffold file torch.distributed writes into its own
