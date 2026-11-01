@@ -326,8 +326,8 @@ DESTRUCTIVE_PATTERNS = [
 
 
 def test_no_destructive_calls_in_source():
-    print("\n[static] no delete/truncate calls in either script")
-    for script in ("fgu_classify_maps.py", "fgu_detect_grid.py"):
+    print("\n[static] no delete/truncate calls in any script")
+    for script in ("fgu_classify_maps.py", "fgu_detect_grid.py", "fgu_find_maps.py"):
         source = open(os.path.join(REPO_ROOT, script)).read()
         for pattern in DESTRUCTIVE_PATTERNS:
             check(re.search(pattern, source) is None, f"{script} does not call {pattern}")
@@ -530,6 +530,98 @@ def test_classify_report_is_written_and_never_overwrites():
 
 
 # ---------------------------------------------------------------------------
+# fgu_find_maps.py
+# ---------------------------------------------------------------------------
+CACHE_DIR = ".fgu_map_index"
+
+
+def _make_find_library(tmp):
+    """tmp/lib with one map at the top and one in a sub-folder. Returns (lib, {relative path: bytes})."""
+    lib = os.path.join(tmp, "lib")
+    os.makedirs(os.path.join(lib, "caves"))
+    make_grid_image(os.path.join(lib, "top.png"), spacing=40)
+    make_grid_image(os.path.join(lib, "caves", "deep.png"), spacing=60)
+    return lib, {rel: read_bytes(os.path.join(lib, *rel.split("/"))) for rel in all_files(lib)}
+
+
+def _outside_cache(lib):
+    return [f for f in all_files(lib) if not f.startswith(CACHE_DIR + "/")]
+
+
+def test_find_maps_writes_only_its_cache_and_never_touches_maps():
+    print("\n[fgu_find_maps.py] index/search/sheet write only inside .fgu_map_index and only read the maps")
+    with tempfile.TemporaryDirectory() as tmp:
+        lib, originals = _make_find_library(tmp)
+
+        run_in_process("fgu_find_maps.py", ["index", "--dir", lib], allowed_roots=[lib])
+        check(sorted(_outside_cache(lib)) == sorted(originals), "after index, no file outside the cache folder was added or removed")
+        check(all(read_bytes(os.path.join(lib, *rel.split("/"))) == b for rel, b in originals.items()),
+              "after index, every map is byte-for-byte unchanged")
+        cache_files = [f for f in all_files(lib) if f.startswith(CACHE_DIR + "/")]
+        check(CACHE_DIR + "/index.npz" in cache_files, "the index was written")
+        check(len([f for f in cache_files if f.startswith(CACHE_DIR + "/thumbs/")]) == 2, "one thumbnail per map was written")
+        check(not any(f.endswith(".tmp") for f in cache_files), "no half-written temporary file was left behind")
+
+        run_in_process("fgu_find_maps.py", ["search", "--dir", lib, "a stone dungeon corridor", "--top", "5"], allowed_roots=[lib])
+        run_in_process("fgu_find_maps.py", ["sheet", "--dir", lib], allowed_roots=[lib])
+        check(sorted(_outside_cache(lib)) == sorted(originals), "after search and sheet, still nothing outside the cache folder")
+        check(all(read_bytes(os.path.join(lib, *rel.split("/"))) == b for rel, b in originals.items()),
+              "after search and sheet, every map is still byte-for-byte unchanged")
+        pages = [f for f in all_files(lib) if f.endswith(".html")]
+        check(len(pages) >= 2 and all(f.startswith(CACHE_DIR + "/") for f in pages),
+              f"the picture pages were written inside the cache folder, found {pages}")
+
+
+def test_find_maps_picks_up_changes_and_never_overwrites_a_page():
+    print("\n[fgu_find_maps.py] a changed library re-indexes only what changed; a page is never overwritten")
+    import importlib, time
+    sys.path.insert(0, REPO_ROOT)
+    sys.argv = ["fgu_find_maps.py"]
+    sys.modules.pop("fgu_find_maps", None)
+    m = importlib.import_module("fgu_find_maps")
+    with tempfile.TemporaryDirectory() as tmp:
+        lib, originals = _make_find_library(tmp)
+        idx = os.path.join(lib, CACHE_DIR, "index.npz")
+
+        run_in_process("fgu_find_maps.py", ["index", "--dir", lib], allowed_roots=[lib])
+        before = m.load_index(lib)
+        check(before is not None and sorted(before["paths"]) == ["caves/deep.png", "top.png"], "the index lists both maps, sub-folder included")
+
+        # A map moved to another folder (what the classifier does) keeps its embedding: no model needed.
+        os.makedirs(os.path.join(lib, "towns"))
+        shutil.move(os.path.join(lib, "top.png"), os.path.join(lib, "towns", "top.png"))
+        recorder = WriteRecorder()
+        with recorder:
+            after = m.update_index(lib)
+        check(not recorder.outside([lib]), "re-indexing wrote only inside the library")
+        check(after is not None and sorted(after["paths"]) == ["caves/deep.png", "towns/top.png"], "the moved map is found at its new place")
+        old_row = before["embeddings"][before["paths"].index("top.png")]
+        new_row = after["embeddings"][after["paths"].index("towns/top.png")]
+        check(np.allclose(old_row, new_row), "the moved map kept its embedding (it wasn't read again)")
+
+        # A map that can't be read is skipped and remembered, not retried on every run.
+        with open(os.path.join(lib, "broken.png"), "wb") as f:
+            f.write(b"not an image")
+        m.update_index(lib)
+        again = m.load_index(lib)["failed"]
+        check(len(again) == 1 and list(again)[0][0] == "broken.png", "the unreadable file is remembered as unreadable")
+
+        # Page names: same second, same prefix -> the second page gets the next free name.
+        real_strftime = time.strftime
+        time.strftime = lambda fmt, *a: "FIXED"
+        try:
+            with WriteRecorder() as rec:
+                first = m.write_page(lib, "page", "<p>first</p>")
+                second = m.write_page(lib, "page", "<p>second</p>")
+        finally:
+            time.strftime = real_strftime
+        check(not rec.outside([lib]), "writing pages touched only the library")
+        check(os.path.basename(first) == "page_FIXED.html" and os.path.basename(second) == "page_FIXED (2).html",
+              f"the second page took the next free name, got {os.path.basename(first)!r} and {os.path.basename(second)!r}")
+        check(read_bytes(first) == b"<p>first</p>", "the first page is byte-for-byte as it was written")
+
+
+# ---------------------------------------------------------------------------
 # fgu_detect_grid.py
 # ---------------------------------------------------------------------------
 def test_detect_grid_only_creates_the_sidecar():
@@ -590,6 +682,8 @@ def main():
     test_classify_undo_never_overwrites()
     test_classify_undo_declines_without_confirmation()
     test_classify_report_is_written_and_never_overwrites()
+    test_find_maps_writes_only_its_cache_and_never_touches_maps()
+    test_find_maps_picks_up_changes_and_never_overwrites_a_page()
     test_detect_grid_only_creates_the_sidecar()
     test_detect_grid_skips_existing_sidecar_without_force()
     test_detect_grid_force_overwrites_but_preserves_other_data()

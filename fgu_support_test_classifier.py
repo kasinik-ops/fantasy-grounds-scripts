@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Correctness tests for fgu_classify_maps.py's model code (the safety tests in
-fgu_support_test_safety.py cover what it does to files; these cover whether it
-still gives the right answers).
+Correctness tests for the model code in fgu_classify_maps.py and fgu_find_maps.py
+(the safety tests in fgu_support_test_safety.py cover what they do to files; these
+cover whether they still give the right answers).
 
 The classifier encodes the category prompts once per run and pushes images through
 the model in batches, instead of re-encoding every prompt for every image. That is
@@ -12,6 +12,8 @@ one-image-at-a-time model(**inputs) forward pass:
   - identical probabilities and identical winning category, image by image
   - the same results whatever the batch size
   - a file that can't be read costs only itself, not the rest of its batch
+  - fgu_find_maps.py encodes text and images exactly as the classifier does, and a
+    search for a colour ranks the image of that colour first
 
 It uses the real CLIP model from the local cache (it never goes online), so run it
 the same way as the safety tests -- inside the project's venv, after the classifier
@@ -132,6 +134,33 @@ def test_unreadable_file_costs_only_itself(m, tmp):
     check(text.count("❌ Error") == 1, f"exactly one error was reported (saw {text.count('❌ Error')})")
 
 
+def test_find_maps_agrees_with_the_classifier_and_ranks_sensibly(m, model, processor, tmp):
+    print("\n[fgu_find_maps.py] same encoding as the classifier; a colour search finds that colour")
+    sys.modules.pop("fgu_find_maps", None)
+    f = importlib.import_module("fgu_find_maps")
+
+    prompts = ["a tavern interior", "a dungeon corridor"]
+    check((f.encode_text_features(model, processor, prompts) - m.encode_text_features(model, processor, prompts)).abs().max().item() < 1e-6,
+          "text embeddings are identical to the classifier's")
+    path = os.path.join(tmp, "probe.png")
+    Image.fromarray(synthetic_images()["rooms"]).save(path)
+    pixels = m.preprocess_image(processor, path)
+    check((f.encode_image_features(model, pixels) - m.encode_image_features(model, pixels)).abs().max().item() < 1e-6,
+          "image embeddings are identical to the classifier's")
+
+    lib = os.path.join(tmp, "colours")
+    os.makedirs(lib)
+    colours = {"red": (220, 30, 30), "green": (30, 170, 60), "blue": (30, 60, 220)}
+    for name, rgb in colours.items():
+        Image.fromarray(np.full((300, 400, 3), rgb, dtype=np.uint8)).save(os.path.join(lib, f"{name}.png"))
+    with contextlib.redirect_stdout(io.StringIO()):
+        index = f.update_index(lib)
+    for name in colours:
+        ranked = f.rank(model, processor, index, f"a solid {name} image")
+        top = index["paths"][ranked[0][1]]
+        check(top == f"{name}.png", f"searching 'a solid {name} image' puts {name}.png first (got {top})")
+
+
 def main():
     m = load_module()
     from transformers import CLIPModel, CLIPProcessor
@@ -146,6 +175,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_new_path_matches_the_original_forward_pass(m, model, processor, tmp)
         test_unreadable_file_costs_only_itself(m, tmp)
+        test_find_maps_agrees_with_the_classifier_and_ranks_sensibly(m, model, processor, tmp)
 
     print()
     if failures:
