@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Safety tests for classify_maps.py and detect_grid.py.
+Safety tests for fgu_classify_maps.py and detect_grid.py.
 
 "Safety" here means: neither script does anything destructive beyond what's
 explicitly allowed --
-  - classify_maps.py may MOVE map images into category subfolders (bringing
+  - fgu_classify_maps.py may MOVE map images into category subfolders (bringing
     their matching .xml sidecar along), but only once the user has opted in
     (-y, or answering "y" to the confirmation prompt), and never by
     overwriting a different file that's already at the destination.
@@ -43,8 +43,8 @@ Known gaps:
     export) aren't covered -- there's no sandboxed Photos library to safely
     test against, and intercepting a third-party library's internal writes
     would be far more fragile than the interception above.
-  - Every classify_maps.py invocation here passes --no-update-check, so
-    classify_maps.py's own CLIP-model-update check (see its module docstring)
+  - Every fgu_classify_maps.py invocation here passes --no-update-check, so
+    fgu_classify_maps.py's own CLIP-model-update check (see its module docstring)
     is never exercised -- that check's state-file write (venv/.model_update_
     check) is legitimate application state, not a map-directory concern, and
     --no-update-check is also the correct way to run this script in any
@@ -55,9 +55,9 @@ run_grid_detector.command set up), since these scripts' own dependencies
 (torch, transformers, opencv-python, ...) need to be installed:
 
     source venv/bin/activate
-    python3 test_safety.py
+    python3 fgu_support_test_safety.py
 
-The very first run will be slow while classify_maps.py downloads the CLIP
+The very first run will be slow while fgu_classify_maps.py downloads the CLIP
 model; it's cached after that, and every test here passes --no-update-check
 so none of them re-trigger a freshness check against huggingface.co.
 """
@@ -90,7 +90,7 @@ def check(condition, message):
 def make_grid_image(path, spacing=50, size=300):
     """A synthetic image with a visible square grid drawn on it: enough for
     detect_grid.py to find a real grid, and a perfectly fine throwaway image
-    for classify_maps.py's file-handling tests (its content doesn't matter
+    for fgu_classify_maps.py's file-handling tests (its content doesn't matter
     there, only that it's a valid, byte-comparable image file)."""
     rng = np.random.default_rng(0)
     img = rng.integers(80, 120, size=(size, size, 3)).astype(np.uint8)
@@ -146,7 +146,7 @@ def assert_repo_untouched(before, after):
 
 
 # Narrow, explicit, and justified: writes made by third-party libraries these
-# scripts depend on, not by classify_maps.py's or detect_grid.py's own logic
+# scripts depend on, not by fgu_classify_maps.py's or detect_grid.py's own logic
 # (neither imports tempfile, and neither references the HF cache directly --
 # grep the source if in doubt). Anything not matching one of these two is
 # still checked against allowed_roots as normal.
@@ -273,29 +273,29 @@ DESTRUCTIVE_PATTERNS = [r"\bos\.remove\(", r"\bos\.unlink\(", r"\bshutil\.rmtree
 
 def test_no_destructive_calls_in_source():
     print("\n[static] no delete/truncate calls in either script")
-    for script in ("classify_maps.py", "detect_grid.py"):
+    for script in ("fgu_classify_maps.py", "detect_grid.py"):
         source = open(os.path.join(REPO_ROOT, script)).read()
         for pattern in DESTRUCTIVE_PATTERNS:
             check(re.search(pattern, source) is None, f"{script} does not call {pattern}")
 
 
 # ---------------------------------------------------------------------------
-# classify_maps.py
+# fgu_classify_maps.py
 # ---------------------------------------------------------------------------
 def test_classify_no_move_leaves_everything_untouched():
-    print("\n[classify_maps.py] --no-move touches nothing")
+    print("\n[fgu_classify_maps.py] --no-move touches nothing")
     with tempfile.TemporaryDirectory() as tmp:
         img = os.path.join(tmp, "map.png")
         make_grid_image(img)
         before = read_bytes(img)
 
-        run_in_process("classify_maps.py", ["--dir", tmp, "--no-move", "--no-update-check"], allowed_roots=[tmp])
+        run_in_process("fgu_classify_maps.py", ["--dir", tmp, "--no-move", "--no-update-check"], allowed_roots=[tmp])
         check(all_files(tmp) == ["map.png"], "no files created or removed")
         check(read_bytes(img) == before, "image content unchanged")
 
 
 def test_classify_declines_without_confirmation():
-    print("\n[classify_maps.py] no -y and empty stdin -> nothing moved")
+    print("\n[fgu_classify_maps.py] no -y and empty stdin -> nothing moved")
     with tempfile.TemporaryDirectory() as tmp:
         img = os.path.join(tmp, "map.png")
         make_grid_image(img)
@@ -305,13 +305,13 @@ def test_classify_declines_without_confirmation():
         # destination prompt and the confirmation prompt hit EOF, and the
         # confirmation prompt's EOF is treated as "no". --no-update-check is
         # unrelated to this -- just keeps the test from touching the network.
-        run_in_process("classify_maps.py", ["--dir", tmp, "--no-update-check"], allowed_roots=[tmp])
+        run_in_process("fgu_classify_maps.py", ["--dir", tmp, "--no-update-check"], allowed_roots=[tmp])
         check(all_files(tmp) == ["map.png"], "no files created or removed")
         check(read_bytes(img) == before, "image content unchanged")
 
 
 def test_classify_move_is_lossless_and_collision_safe():
-    print("\n[classify_maps.py] -y actually moves, without corrupting or overwriting")
+    print("\n[fgu_classify_maps.py] -y actually moves, without corrupting or overwriting")
     with tempfile.TemporaryDirectory() as tmp:
         img = os.path.join(tmp, "map.png")
         make_grid_image(img)
@@ -328,7 +328,7 @@ def test_classify_move_is_lossless_and_collision_safe():
 
         # An impossible threshold forces a deterministic category, so we know
         # exactly which subfolder the mover will target.
-        run_in_process("classify_maps.py", [
+        run_in_process("fgu_classify_maps.py", [
             "--dir", tmp, "--move-to", tmp, "-y",
             "--unclassified-threshold", "999", "--no-update-check",
         ], allowed_roots=[tmp])
@@ -343,7 +343,7 @@ def test_classify_move_is_lossless_and_collision_safe():
 
 
 def test_classify_moves_sidecar_with_image():
-    print("\n[classify_maps.py] moving an image brings its .xml sidecar along, untouched")
+    print("\n[fgu_classify_maps.py] moving an image brings its .xml sidecar along, untouched")
     with tempfile.TemporaryDirectory() as tmp:
         img = os.path.join(tmp, "map.png")
         make_grid_image(img)
@@ -352,7 +352,7 @@ def test_classify_moves_sidecar_with_image():
             f.write('<root version="4.1" dataversion="20210302"><gridsize>50,50</gridsize></root>')
         sidecar_bytes = read_bytes(sidecar)
 
-        run_in_process("classify_maps.py", [
+        run_in_process("fgu_classify_maps.py", [
             "--dir", tmp, "--move-to", tmp, "-y",
             "--unclassified-threshold", "999", "--no-update-check",
         ], allowed_roots=[tmp])
@@ -364,7 +364,7 @@ def test_classify_moves_sidecar_with_image():
 
 
 def test_classify_move_to_different_tree_only_touches_both_named_dirs():
-    print("\n[classify_maps.py] --move-to a different directory only touches source + destination")
+    print("\n[fgu_classify_maps.py] --move-to a different directory only touches source + destination")
     with tempfile.TemporaryDirectory() as sandbox:
         source_dir = os.path.join(sandbox, "source")
         dest_dir = os.path.join(sandbox, "destination")
@@ -383,7 +383,7 @@ def test_classify_move_to_different_tree_only_touches_both_named_dirs():
             f.write("UNRELATED FANTASY GROUNDS DATA -- MUST NOT BE TOUCHED")
         decoy_bytes = read_bytes(decoy_file)
 
-        run_in_process("classify_maps.py", [
+        run_in_process("fgu_classify_maps.py", [
             "--dir", source_dir, "--move-to", dest_dir, "-y",
             "--unclassified-threshold", "999", "--no-update-check",
         ], allowed_roots=[source_dir, dest_dir])
