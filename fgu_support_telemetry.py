@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fgu_telemetry.py — Real-time performance monitor for Fantasy Grounds Unity.
+fgu_support_telemetry.py — Real-time performance monitor for Fantasy Grounds Unity.
 
 This script attaches to the running Fantasy Grounds process and logs 
 its CPU and Memory (RAM) consumption to a CSV file every 0.5 seconds. 

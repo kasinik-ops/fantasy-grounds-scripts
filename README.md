@@ -4,7 +4,7 @@ This repo is for scripts for Fantasy grounds. It is intended for my personal use
 Claude (sonnet 5 and opus 4.8 extra) and Gemini (3.1 pro, 3.5 flash, 3.6 flash) were used to develop the scripts. They were lightly code reviewed by a human.
 
 
-**fgu_maptest.py**
+**fgu_support_maptest.py**
 
 This script checks maps for issues which may cause performance issues and gives recommendations on problematic maps. It is read-only. Example output is in the image in this repo.
 
@@ -105,7 +105,7 @@ Status: new, and written without access to a Windows machine, so it has not been
 
 **Getting a map into Fantasy Grounds**
 
-Neither `fgu_classify_map.py or` or `fgu_detect_grid.py` puts anything into Fantasy Grounds by itself as library can run into the thousands of files. To move the maps over:
+Neither `fgu_classify_maps.py` nor `fgu_detect_grid.py` puts anything into Fantasy Grounds by itself as library can run into the thousands of files. To move the maps over:
 
 1. Copy the map image and if it exists also the matching `.xml` (same base filename, e.g. `map.png` + `map.xml`) into your campaign's `images/` folder (flat, not in a subfolder).
 2. In Fantasy Grounds: sidebar -> Library -> Assets -> Images, then click **Refresh Folder Assets** (bottom right) so it notices the new files. That same panel has a link (bottom right) that opens the images folder in Finder (File Explorer on Windows), handy for copying files over.

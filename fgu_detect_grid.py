@@ -50,7 +50,7 @@ FGU_XML_DATAVERSION = "20210302"
 def _sidecar_path(image_path):
     """FGU sidecar path for image_path: same directory and base filename, with the
     image's own extension replaced by .xml (map.png -> map.xml) -- NOT map.png.xml.
-    Matches the convention fgu_maptest.py's scan_sidecars() and the uvtt2fgu
+    Matches the convention fgu_support_maptest.py's scan_sidecars() and the uvtt2fgu
     reference tool both expect. Duplicated from fgu_classify_maps.py so the two scripts
     stay independent rather than sharing a module."""
     return os.path.splitext(image_path)[0] + ".xml"
