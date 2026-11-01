@@ -50,12 +50,21 @@ Known gaps:
     --no-update-check is also the correct way to run this script in any
     automated/CI-like context in the first place.
 
-Run from inside the project's venv (same one run_classifier_map.command and
-run_grid_detector.command set up), since these scripts' own dependencies
-(torch, transformers, opencv-python, ...) need to be installed:
+Run from inside the project's venv (same one the launchers set up), since these
+scripts' own dependencies (torch, transformers, opencv-python, ...) need to be
+installed. On macOS:
 
     source venv/bin/activate
     python3 fgu_support_test_safety.py
+
+On Windows, run both launchers' setup once, then use the venv they created
+(it needs both tools' packages, because this test imports numpy and cv2 itself):
+
+    powershell -ExecutionPolicy Bypass -File run_windows.ps1 -Tool classify -SetupOnly
+    powershell -ExecutionPolicy Bypass -File run_windows.ps1 -Tool grid -SetupOnly
+    venv\\Scripts\\python.exe fgu_support_test_safety.py
+
+CI (.github/workflows/ci.yml) runs it exactly this way on both platforms.
 
 The very first run will be slow while fgu_classify_maps.py downloads the CLIP
 model; it's cached after that, and every test here passes --no-update-check
@@ -107,11 +116,13 @@ def read_bytes(path):
 
 
 def all_files(root):
-    """Sorted paths of every file under root, relative to root."""
+    """Sorted paths of every file under root, relative to root, always with "/"
+    separators so the expected values in the tests below read the same on
+    macOS and Windows."""
     found = []
     for dirpath, _, files in os.walk(root):
         for f in files:
-            found.append(os.path.relpath(os.path.join(dirpath, f), root))
+            found.append(os.path.relpath(os.path.join(dirpath, f), root).replace(os.sep, "/"))
     return sorted(found)
 
 
@@ -119,7 +130,9 @@ def all_files(root):
 # Repo-untouched check (secondary layer -- see WriteRecorder below for the
 # primary, complete-coverage check).
 # ---------------------------------------------------------------------------
-REPO_IGNORE_DIRNAMES = ("venv", "__pycache__", ".git")
+# windows_tools is the Windows launcher's private Python/uv folder: thousands of
+# files, gitignored, and (like venv) not something these scripts ever write to.
+REPO_IGNORE_DIRNAMES = ("venv", "windows_tools", "__pycache__", ".git")
 
 
 def snapshot_repo():

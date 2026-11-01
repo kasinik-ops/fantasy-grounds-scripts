@@ -92,6 +92,8 @@ The first run needs an internet connection and takes a few minutes. It downloads
 
 After that first run the launchers make no network requests of their own. The CLIP model update check in `fgu_classify_maps.py` is the only thing that goes online, at most once every 24 hours (see `--no-update-check`).
 
+To do the setup ahead of time (for example before a trip with no internet), run `powershell -ExecutionPolicy Bypass -File run_windows.ps1 -Tool classify -SetupOnly`, and the same again with `-Tool grid`. That installs everything and stops, without opening any dialog.
+
 Differences from the Mac:
 
 - No Apple Photos albums (`--album`); point it at a folder.
@@ -139,3 +141,11 @@ The very first run will be slow while `fgu_classify_maps.py` downloads the CLIP 
 
 
 
+
+**fgu_support_check_repo.py**
+
+Quick consistency checks that need nothing installed and take about a second: every script the README mentions exists, each launcher runs a script that exists, the `.command` and `.sh` files are executable, `run_windows.ps1` is pure ASCII, the `.bat` files keep their CRLF line endings, and every script parses. Run it with `python3 fgu_support_check_repo.py`. It only reads files.
+
+**Continuous integration**
+
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`: the repo checks above, the safety tests on macOS, and the safety tests on Windows. The Windows job sets itself up with the real launcher (`run_windows.ps1 -SetupOnly`), so it also exercises the first-run download, hash check and install, and fails if a second run does any setup again. The CLIP model is cached between runs. CI can't click through the Windows dialogs, so those still need a human.

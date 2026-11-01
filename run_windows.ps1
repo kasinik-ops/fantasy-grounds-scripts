@@ -20,7 +20,12 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('classify', 'grid')]
-    [string]$Tool
+    [string]$Tool,
+
+    # Do the first-run setup (uv, Python, packages) and stop: no dialogs, nothing
+    # is run. For preparing a machine ahead of time -- e.g. before going offline --
+    # and for CI, which has nobody to click the dialogs.
+    [switch]$SetupOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -259,6 +264,12 @@ try {
     $scriptPath = Join-Path $PSScriptRoot $Cfg.Script
     if (-not (Test-Path -LiteralPath $scriptPath)) {
         throw "Cannot find $($Cfg.Script) next to this launcher. If it was renamed, update the Script name near the top of run_windows.ps1."
+    }
+
+    if ($SetupOnly) {
+        Ensure-Environment $Tool $Cfg.Packages
+        Write-Host 'Setup complete.'
+        exit 0
     }
 
     # 1. Explain what this does before touching anything, with a way to read more.

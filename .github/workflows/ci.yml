@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch/PR makes the older run pointless.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The scripts print emoji; never let a legacy-codepage console crash them.
+  PYTHONUTF8: "1"
+  # The safety tests check the repo is untouched; keep stray .pyc files out of it.
+  PYTHONDONTWRITEBYTECODE: "1"
+  HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
+
+# Actions are pinned to commit SHAs (the tag is in the comment), the same way the
+# Windows launcher pins uv by hash. To update one: look up the commit for the new
+# release tag and change both the SHA and the comment.
+jobs:
+  repo-checks:
+    name: Repo checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Launchers, README names, line endings, exec bits, syntax
+        run: python3 fgu_support_check_repo.py
+
+  safety-macos:
+    name: Safety tests (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install the packages the Mac launchers install
+        run: python -m pip install torch transformers pillow pillow-heif opencv-python numpy
+      - name: Restore the CLIP model cache
+        id: model-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/huggingface
+          key: clip-vit-base-patch32-${{ runner.os }}-v1
+      - name: Make sure the CLIP model is downloaded
+        run: python -c "from transformers import CLIPModel, CLIPProcessor; n='openai/clip-vit-base-patch32'; CLIPModel.from_pretrained(n); CLIPProcessor.from_pretrained(n); print('CLIP model ready')"
+      # Saved now, not at the end of the job, so a failing test run doesn't throw away the download.
+      - name: Save the CLIP model cache
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/huggingface
+          key: clip-vit-base-patch32-${{ runner.os }}-v1
+      - name: Run the safety tests
+        run: python fgu_support_test_safety.py
+
+  safety-windows:
+    name: Safety tests (Windows, set up by the real launcher)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        # Windows PowerShell 5.1 -- what users actually have -- not pwsh 7.
+        shell: powershell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # run_windows.ps1 -SetupOnly is the launcher's real first-run path: download
+      # uv, check its SHA-256, make a private Python, install the packages.
+      - name: First-run setup, classifier
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_windows.ps1 -Tool classify -SetupOnly
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: First-run setup, grid detector
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_windows.ps1 -Tool grid -SetupOnly
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: A second run must do no setup at all (the no-network-after-first-run promise)
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $out = powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_windows.ps1 -Tool classify -SetupOnly 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($out -match 'First-time setup') {
+            Write-Host 'FAIL: the second run tried to set things up again'
+            exit 1
+          }
+      - name: Restore the CLIP model cache
+        id: model-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/huggingface
+          key: clip-vit-base-patch32-${{ runner.os }}-v1
+      - name: Make sure the CLIP model is downloaded
+        run: |
+          venv\Scripts\python.exe -c "from transformers import CLIPModel, CLIPProcessor; n='openai/clip-vit-base-patch32'; CLIPModel.from_pretrained(n); CLIPProcessor.from_pretrained(n); print('CLIP model ready')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Save the CLIP model cache
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/huggingface
+          key: clip-vit-base-patch32-${{ runner.os }}-v1
+      - name: Run the safety tests
+        run: |
+          venv\Scripts\python.exe fgu_support_test_safety.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
