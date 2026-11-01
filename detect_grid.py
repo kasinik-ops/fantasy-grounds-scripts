@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import xml.etree.ElementTree as ET
 import cv2
@@ -6,10 +7,10 @@ import numpy as np
 import pillow_heif
 from PIL import Image
 
-# Windows support is a planned future feature. This script's own logic is already
-# OS-agnostic (os.path/os.walk work cross-platform) -- a future Windows launcher
-# would just be a separate .bat/.ps1 calling this same script, nothing else to
-# prepare for that now.
+# This script's own logic is OS-agnostic (os.path/os.walk work cross-platform);
+# only Apple Photos support (--album) is Mac-only. On Windows it's started by
+# run_grid_detector.bat -> run_windows.ps1, which handles installing Python and
+# the packages; --album is refused with a clear message there (see main()).
 
 pillow_heif.register_heif_opener()  # lets PIL open .heic/.heif (iPhone's default photo format)
 
@@ -274,6 +275,9 @@ def main():
         image_paths = _scan_local_dir(args.dir)
         print(f"📂 Found {len(image_paths)} map files (including subfolders) for grid detection.")
     else:
+        if sys.platform != "darwin":
+            print("❌ Apple Photos albums are only supported on macOS. Use --dir with a folder of images instead.")
+            return
         image_paths = _scan_album(args.album)
         print(f"📸 Found {len(image_paths)} map files in Apple Photos album '{args.album}'.")
 

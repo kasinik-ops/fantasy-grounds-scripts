@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import subprocess
 import shutil
@@ -9,12 +10,11 @@ import pillow_heif
 from PIL import Image
 from transformers import CLIPModel, CLIPProcessor
 
-# Windows support is a planned future feature. This script's own logic is already
-# OS-agnostic (os.path/os.walk work cross-platform); the only Mac-specific piece is
-# the Apple Photos/AppleScript integration below, which is inherent to that feature
-# (Photos.app and osxphotos are Mac-only) rather than something to special-case here.
-# A future Windows launcher would just be a separate .bat/.ps1 calling this same
-# script -- nothing else to prepare for that now.
+# This script's own logic is OS-agnostic (os.path/os.walk work cross-platform);
+# the only Mac-specific piece is the Apple Photos/AppleScript integration
+# (--album), since Photos.app and osxphotos are Mac-only. On Windows it's started
+# by run_classifier_map.bat -> run_windows.ps1, which handles installing Python
+# and the packages; --album is refused with a clear message there (see main()).
 
 pillow_heif.register_heif_opener()  # lets PIL open .heic/.heif (iPhone's default photo format)
 
@@ -364,6 +364,9 @@ def main():
         image_paths = _scan_local_dir(args.dir)
         print(f"📂 Found {len(image_paths)} map files directly in local directory.")
     else:
+        if sys.platform != "darwin":
+            print("❌ Apple Photos albums are only supported on macOS. Use --dir with a folder of images instead.")
+            return
         image_paths = _scan_album(args.album)
         print(f"📸 Found {len(image_paths)} map files in Apple Photos album '{args.album}'.")
 

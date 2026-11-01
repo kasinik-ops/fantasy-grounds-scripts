@@ -37,7 +37,7 @@ The Issue: Security updates or interrupted downloads can strip the "executable" 
 
 **fgu_classify_maps.py**
 
-This uses classifies RPG battlemaps into kinds to make grabbing the right map before a session easier. Windows support is planned but not implemented yet.
+This uses classifies RPG battlemaps into kinds to make grabbing the right map before a session easier. It runs on Mac OS X and on Windows (see **Running on Windows** below).
 
 On Mac OS X `./run_classifier_map.command` from the terminal (or double-click on it in the Mac OS X Finder) for a guided, dialog-based version of everything below, or call fgu_classify_maps.py directly for full control over every flag. The input can either be files in a folder or photos in an Apple photos album.
 
@@ -84,12 +84,31 @@ Unlike `fgu_classify_maps.py`, this scans recursively (including category subfol
 | `--grid-min-confidence` | `0.15` | Minimum autocorrelation confidence (0-1) before reporting "no grid" |
 | `--grid-min-line-coverage` | `0.5` | Minimum fraction (0-1) of the image a candidate grid line must actually span to count as real |
 
+**Running on Windows**
+
+Windows has neither Python nor bash, so there are Windows launchers that set everything up for you: double-click `run_classifier_map.bat` (sorts maps into categories) or `run_grid_detector.bat` (grid detection). They show the same dialogs as the Mac `.command` launchers. Both just start `run_windows.ps1`, which is where the real work is.
+
+The first run needs an internet connection and takes a few minutes. It downloads [uv](https://github.com/astral-sh/uv) (a pinned version, checked against a SHA-256 hash in `run_windows.ps1` before it is ever run) and uses it to fetch a private copy of Python 3.12 and the packages the tool needs. Everything goes into the `windows_tools` and `venv` folders next to the scripts: nothing is installed system-wide, no admin rights are needed, and deleting those two folders removes it all. Keep the folder path short (for example `C:\fgu`): some of the packages have very long file names, and a deep path can push them over Windows' 260-character limit.
+
+After that first run the launchers make no network requests of their own. The CLIP model update check in `fgu_classify_maps.py` is the only thing that goes online, at most once every 24 hours (see `--no-update-check`).
+
+Differences from the Mac:
+
+- No Apple Photos albums (`--album`); point it at a folder.
+- CPU only, so classification is slower than on an Apple Silicon Mac.
+- The `.bat` files start PowerShell with `-ExecutionPolicy Bypass` for that one run, because Windows blocks `.ps1` files by default. It doesn't change any system setting.
+
+To run a script directly instead, after the launcher has run once: `venv\Scripts\python.exe fgu_classify_maps.py --dir "C:\Maps"`.
+
+Status: new, and written without access to a Windows machine, so it has not been tested on one yet. `fgu_support_test_safety.py` has not been made Windows-compatible either.
+
+
 **Getting a map into Fantasy Grounds**
 
 Neither `fgu_classify_map.py or` or `fgu_detect_grid.py` puts anything into Fantasy Grounds by itself as library can run into the thousands of files. To move the maps over:
 
 1. Copy the map image and if it exists also the matching `.xml` (same base filename, e.g. `map.png` + `map.xml`) into your campaign's `images/` folder (flat, not in a subfolder).
-2. In Fantasy Grounds: sidebar -> Library -> Assets -> Images, then click **Refresh Folder Assets** (bottom right) so it notices the new files. That same panel has a link (bottom right) that opens the images folder in Finder, handy for copying files over.
+2. In Fantasy Grounds: sidebar -> Library -> Assets -> Images, then click **Refresh Folder Assets** (bottom right) so it notices the new files. That same panel has a link (bottom right) that opens the images folder in Finder (File Explorer on Windows), handy for copying files over.
 3. Click the image, then click **Create Image Record**.
 4. In the opened map, click **Grid**, then click the eye icon to make the grid visible.
 
