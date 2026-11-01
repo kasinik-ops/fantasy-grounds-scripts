@@ -102,7 +102,7 @@ Differences from the Mac:
 
 To run a script directly instead, after the launcher has run once: `venv\Scripts\python.exe fgu_classify_maps.py --dir "C:\Maps"`.
 
-Status: new, and written without access to a Windows machine, so it has not been tested on one yet. `fgu_support_test_safety.py` has not been made Windows-compatible either.
+Status: CI tests the setup and the scripts on a real Windows machine on every push: the first-run install, the fact that a second run does no setup, and the safety tests. The dialogs and the double-click `.bat` files are not tested, because CI can't click through them; they have only been reviewed by hand.
 
 
 **Getting a map into Fantasy Grounds**
