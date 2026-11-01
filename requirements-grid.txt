@@ -1,0 +1,7 @@
+# Packages for fgu_detect_grid.py. The Mac launcher, the Windows launcher
+# (run_windows.ps1) and CI all install from this one file. See
+# requirements-classify.txt for how the ranges work.
+pillow>=11,<13
+pillow-heif>=1.1,<2
+opencv-python>=5,<6
+numpy>=2,<3

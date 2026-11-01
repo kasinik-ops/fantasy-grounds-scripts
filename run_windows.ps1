@@ -38,12 +38,12 @@ $ToolConfig = @{
     classify = @{
         Title    = 'RPG Map Categorizer'
         Script   = 'fgu_classify_maps.py'
-        Packages = @('torch', 'transformers', 'pillow', 'pillow-heif')
+        Requirements = 'requirements-classify.txt'
     }
     grid     = @{
         Title    = 'RPG Map Grid Detector'
         Script   = 'fgu_detect_grid.py'
-        Packages = @('pillow', 'pillow-heif', 'opencv-python', 'numpy')
+        Requirements = 'requirements-grid.txt'
     }
 }
 $Cfg = $ToolConfig[$Tool]
@@ -189,7 +189,12 @@ function Ask-Option([string]$Flag, [string]$Prompt, [string]$Default) {
 
 # --- First-run setup ---------------------------------------------------------------
 
-function Ensure-Environment([string]$StampName, [string[]]$Packages) {
+function Ensure-Environment([string]$StampName, [string]$Requirements) {
+    $requirementsPath = Join-Path $PSScriptRoot $Requirements
+    if (-not (Test-Path -LiteralPath $requirementsPath)) {
+        throw "Cannot find $Requirements next to this launcher. It lists the packages to install."
+    }
+
     if (-not (Test-Path -LiteralPath $UvExe)) {
         Write-Host "First-time setup: downloading uv $UvVersion (about 15 MB, needs internet)..."
         New-Item -ItemType Directory -Force -Path $ToolsDir | Out-Null
@@ -219,14 +224,16 @@ function Ensure-Environment([string]$StampName, [string[]]$Packages) {
 
     # A small stamp file records which package set is installed, so once it is
     # done this makes no network request at all. One stamp per tool, because the
-    # two tools install different packages into the same venv.
+    # two tools install different packages into the same venv. The stamp holds the
+    # requirements file's text, so changing a version range there re-installs once.
     $stamp = Join-Path $VenvDir ".deps-$StampName"
-    $wanted = "python $PythonVersion`n" + ($Packages -join "`n")
+    $requirementsText = (Get-Content -LiteralPath $requirementsPath -Raw) -replace "`r`n", "`n"
+    $wanted = "python $PythonVersion`n" + $requirementsText
     $have = ''
     if (Test-Path -LiteralPath $stamp) { $have = Get-Content -LiteralPath $stamp -Raw }
     if ($have -ne $wanted) {
-        Write-Host "First-time setup: installing $($Packages -join ', ') (several hundred MB; can take a few minutes; needs internet)..."
-        & $UvExe pip install --python $VenvPython @Packages
+        Write-Host "First-time setup: installing the packages listed in $Requirements (several hundred MB; can take a few minutes; needs internet)..."
+        & $UvExe pip install --python $VenvPython -r $requirementsPath
         if ($LASTEXITCODE -ne 0) {
             throw "Installing the packages failed (exit code $LASTEXITCODE). If it mentions a path being too long, move this whole folder somewhere with a shorter path, such as C:\fgu, and try again."
         }
@@ -267,7 +274,7 @@ try {
     }
 
     if ($SetupOnly) {
-        Ensure-Environment $Tool $Cfg.Packages
+        Ensure-Environment $Tool $Cfg.Requirements
         Write-Host 'Setup complete.'
         exit 0
     }
@@ -329,7 +336,7 @@ try {
     elseif ($r.Button -ne 'Use Defaults') { Write-Host 'Canceled.'; exit 0 }
 
     # 5. Make sure Python and the packages exist (a no-op after the first run).
-    Ensure-Environment $Tool $Cfg.Packages
+    Ensure-Environment $Tool $Cfg.Requirements
 
     # 6. Run the script. Its own prompts (move confirmation, model download) are
     #    answered right here in this console window.

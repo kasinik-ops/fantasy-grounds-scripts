@@ -80,6 +80,18 @@ for path in ps1_files:
     for script in scripts:
         check(script in files, f"{path} -> {script}")
 
+print("\n[requirements] every requirements file that is named exists, and every package is a bounded range")
+requirement_files = sorted(p for p in files if re.fullmatch(r"requirements[\w\-]*\.txt", p))
+for path in launchers + ps1_files + [p for p in files if p.endswith(".yml")]:
+    text = read_text(path)
+    for name in sorted(set(re.findall(r"\b(requirements[\w\-]*\.txt)\b", text))):
+        check(name in files, f"{path} -> {name}")
+for path in requirement_files:
+    for line in read_text(path).splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            check(">=" in line and "<" in line, f"{path}: '{line}' has both a lower and an upper bound")
+
 print("\n[Mac/shell] executable, with a shebang and LF line endings")
 for path in shell_scripts:
     check(files[path] == "100755", f"{path} is executable in git (mode {files[path]})")

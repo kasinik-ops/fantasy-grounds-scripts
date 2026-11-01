@@ -1,0 +1,12 @@
+# Packages for fgu_classify_maps.py and fgu_find_maps.py. The Mac launcher, the
+# Windows launcher (run_windows.ps1) and CI all install from this one file.
+#
+# Each line is a range, not an exact version: the lower bound is a version these
+# scripts have been tested with, the upper bound stops the next major release
+# (which can change behaviour) from being picked up before it has been tested.
+# pip/uv still choose the newest release inside the range that suits the Python
+# on the machine. To move a bound: change it here, then let CI run on the push.
+torch>=2.8,<3
+transformers>=4.57,<6
+pillow>=11,<13
+pillow-heif>=1.1,<2

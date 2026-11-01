@@ -45,11 +45,19 @@ Classifies each map (PNG, JPG/JPEG, WEBP, HEIC/HEIF.) into one of the categories
 
 - **indoors**: castle&fort&tower, cave, church, crypt, dungeon, inn&house, manor, modern, scifi, unclassified
 - **outdoors**: camp, castle&fort&tower, overgrowth, planar, regional, ruin, scifi, ship, site of interest, trail&bridge&travel, urban&town&city, village&rural, water&coast, wilderness
-- **other**: map scenes, unclassified (for matches below the confience threshold, by default this is 25%)
+- **other**: map scenes, unclassified (for matches below the confience threshold, by default this is 25%), not a map (only with `--detect-photos`)
 
 The maps are then MOVED into category-named subfolders.  Apple Photos images are exported as classified copies into that destination (originals are left alone in Photos) and also get the category written back as a Photos keyword on the original.
 
 It only scans files sitting directly in the selected folder, not subdirectories so re-running it won't re-classify maps a previous run already sorted into category subfolders.
+
+*Undoing a sort.* Every run that moves files writes a record of what it moved (`fgu_moves_<date>_<time>.jsonl`) in the destination folder. To put everything back where it was, including the `.xml` sidecars: `python fgu_classify_maps.py --undo "<that file>"`. It shows what it will do and asks first, never overwrites a file that has since appeared at the original place (it leaves that map where it is and says so), and never removes a folder, so category folders it empties stay. Apple Photos exports are copies and aren't covered; the originals were never moved.
+
+*A report instead of guessing.* `--report results.csv` writes one row per map: its file, the tag, how confident the model was, and what happened to it. It works with `--no-move`, which makes a dry run you can read in a spreadsheet before deciding to move anything. It never overwrites a report that already exists; a second one is saved as `results (2).csv`.
+
+*Speed.* The category descriptions are now encoded once per run and the maps go through the model in batches (`--batch-size`, default 16). The answers are the same as the one-at-a-time method (`fgu_support_test_classifier.py` checks that); on a CPU it measured about 3.8 times faster. That was measured on a CPU only. On an Apple Silicon GPU it has not been timed, so the speed-up there is unknown, though the answers are checked to be the same.
+
+*Photos in the pile (experimental, off by default).* `--detect-photos` also asks the model whether each image is a photograph rather than a map, and tags those `not a map` instead of forcing them into a map category; `--photo-threshold` (default 80) is how sure it has to be. It is untuned: on a small test, drawn maps were never flagged, but only some real photos were (scenic landscapes can read as maps to the model). Look at the `--report` output before trusting it with a real library.
 
 `fgu_classify_maps.py`:
 
@@ -64,7 +72,28 @@ It only scans files sitting directly in the selected folder, not subdirectories 
 | `--check-update` | off | Check Hugging Face for a model update now, bypassing the 24h throttle (still prompts) |
 | `--force-update` | off | Check now and download an update without prompting, if one is found |
 | `--no-update-check` | off | Skip the model-update check entirely; use whatever's cached (for limited/no internet) |
+| `--batch-size N` | `16` | Maps per model pass; lower it if memory is tight |
+| `--report FILE.csv` | | Write a CSV of every map's tag, confidence and outcome (never overwrites) |
+| `--detect-photos` | off | Tag images that look like photographs `not a map` (experimental) |
+| `--photo-threshold` | `80.0` | Confidence (%) needed before `--detect-photos` tags something `not a map` |
+| `--undo MANIFEST` | | Put back everything a previous run moved, using its `fgu_moves_*.jsonl` record |
 
+
+**fgu_find_maps.py**
+
+Finds maps by describing them, and shows a library as a page of pictures. Python only; there is no dialog launcher for it yet. It reads every map under the folder (sub-folders included, so it works on a library the classifier has already sorted) and keeps what it learned in a hidden `.fgu_map_index` folder inside that library, so after the first pass it only reads maps that are new or changed. A map that was only moved to another folder (what the classifier does) is recognised and isn't read again.
+
+```
+python fgu_find_maps.py search --dir "/path/to/maps" "tavern interior at night"
+python fgu_find_maps.py sheet  --dir "/path/to/maps"
+python fgu_find_maps.py index  --dir "/path/to/maps"
+```
+
+- `search` ranks the library against your description and writes an HTML page of thumbnails, best match first, with a similarity score. Open the page in a browser (or add `--open`) and click a map to open the real file. `--top N` sets how many to show (default 24).
+- `sheet` writes the same kind of page for the whole library, grouped by folder.
+- `index` only updates the index. `search` and `sheet` do that first themselves, so you rarely need it, except to do the slow first pass ahead of time.
+
+What it writes is limited to `.fgu_map_index/` inside the library: the index (`index.npz`, updated in place), a small JPEG thumbnail per map, and the HTML pages. Your maps are only read. A page is never overwritten (a new one gets the next free name), nothing is ever deleted, and an unreadable file is skipped and remembered until it changes. Thumbnails of maps you later remove stay behind; the folder is only a cache, so it is safe to delete by hand whenever you like. It never goes online: it uses the CLIP model the classifier downloaded, and tells you to run the classifier once if that is missing. It is the same model, so "find a map" is only as good as CLIP's idea of what a description looks like; the scores rank maps against each other, they are not a probability.
 
 **fgu_detect_grid.py**
 
@@ -88,7 +117,7 @@ Unlike `fgu_classify_maps.py`, this scans recursively (including category subfol
 
 Windows has neither Python nor bash, so there are Windows launchers that set everything up for you: double-click `run_classifier_map.bat` (sorts maps into categories) or `run_grid_detector.bat` (grid detection). They show the same dialogs as the Mac `.command` launchers. Both just start `run_windows.ps1`, which is where the real work is.
 
-The first run needs an internet connection and takes a few minutes. It downloads [uv](https://github.com/astral-sh/uv) (a pinned version, checked against a SHA-256 hash in `run_windows.ps1` before it is ever run) and uses it to fetch a private copy of Python 3.12 and the packages the tool needs. Everything goes into the `windows_tools` and `venv` folders next to the scripts: nothing is installed system-wide, no admin rights are needed, and deleting those two folders removes it all. Keep the folder path short (for example `C:\fgu`): some of the packages have very long file names, and a deep path can push them over Windows' 260-character limit.
+The first run needs an internet connection and takes a few minutes. It downloads [uv](https://github.com/astral-sh/uv) (a pinned version, checked against a SHA-256 hash in `run_windows.ps1` before it is ever run) and uses it to fetch a private copy of Python 3.12 and the packages listed in `requirements-classify.txt` or `requirements-grid.txt`. Everything goes into the `windows_tools` and `venv` folders next to the scripts: nothing is installed system-wide, no admin rights are needed, and deleting those two folders removes it all. Keep the folder path short (for example `C:\fgu`): some of the packages have very long file names, and a deep path can push them over Windows' 260-character limit.
 
 After that first run the launchers make no network requests of their own. The CLIP model update check in `fgu_classify_maps.py` is the only thing that goes online, at most once every 24 hours (see `--no-update-check`).
 
@@ -103,6 +132,11 @@ Differences from the Mac:
 To run a script directly instead, after the launcher has run once: `venv\Scripts\python.exe fgu_classify_maps.py --dir "C:\Maps"`.
 
 Status: CI tests the setup and the scripts on a real Windows machine on every push: the first-run install, the fact that a second run does no setup, and the safety tests. The dialogs and the double-click `.bat` files are not tested, because CI can't click through them; they have only been reviewed by hand.
+
+
+**Package versions**
+
+`requirements-classify.txt` and `requirements-grid.txt` list the packages the tools need, as version ranges. The Mac launchers, the Windows launcher and CI all install from these same two files, so the versions CI tests are the versions you get. Each lower bound is a version that has been tested; each upper bound stops the next major release from being picked up until it has been tested. An existing Mac `venv` is not upgraded as long as it already satisfies the ranges. (`osxphotos<0.67`, which only the Mac `--album` mode uses, is added by the Mac launchers themselves.) On Windows, editing a range re-runs the install once.
 
 
 **Getting a map into Fantasy Grounds**
@@ -130,7 +164,7 @@ This analyses the telemetry captured by fgu_support_telemetry.py
 
 **fgu_support_test_safety.py**
 
-Safety tests for `fgu_classify_maps.py` and `fgu_detect_grid.py`: checks that neither script does anything destructive beyond what's explicitly allowed (moving maps into category subfolders, creating/overwriting a map's `.xml` sidecar), and that neither ever overwrites an existing file without that being explicitly opted into (`-y` for moving, `-f`/`--force` for sidecar overwrite). Every write-capable call either script uses is intercepted for the duration of each run, and every path touched is checked against the exact directories that run was told to use Each script runs in-process so that interception can see every call; nothing about the scripts' own logic is mocked. A second, independent check snapshots the whole repo before and after and fails if anything in it changed at all. Only `--dir` mode is covered; `--album` mode's Photos-keyword write and osxphotos' own export aren't (no safe way to test against a real Photos library), and every `fgu_classify_maps.py` invocation passes `--no-update-check` so its model-update check is never exercised either. Run from inside the project `venv`:
+Safety tests for `fgu_classify_maps.py`, `fgu_find_maps.py` and `fgu_detect_grid.py`: checks that none of them does anything destructive beyond what's explicitly allowed (moving maps into category subfolders and undoing that, writing a CSV report, creating/overwriting a map's `.xml` sidecar, writing the `.fgu_map_index` cache), and that none ever overwrites an existing file without that being explicitly opted into (`-y` for moving, `-f`/`--force` for sidecar overwrite). It also checks that undo restores files byte-for-byte and never overwrites, and that `fgu_find_maps.py` only reads the maps. Every write-capable call either script uses is intercepted for the duration of each run, and every path touched is checked against the exact directories that run was told to use Each script runs in-process so that interception can see every call; nothing about the scripts' own logic is mocked. A second, independent check snapshots the whole repo before and after and fails if anything in it changed at all. Only `--dir` mode is covered; `--album` mode's Photos-keyword write and osxphotos' own export aren't (no safe way to test against a real Photos library), and every `fgu_classify_maps.py` invocation passes `--no-update-check` so its model-update check is never exercised by these tests (CI exercises it separately, see below). Run from inside the project `venv`:
 
 ```
 source venv/bin/activate
@@ -142,10 +176,19 @@ The very first run will be slow while `fgu_classify_maps.py` downloads the CLIP 
 
 
 
+**fgu_support_test_classifier.py**
+
+Correctness tests (the safety tests cover what the scripts do to files; these cover whether the model code still gives the right answers). It checks that the batched, prompts-encoded-once method in `fgu_classify_maps.py` gives the same probabilities and the same winning category as the original one-image-at-a-time method, whatever the batch size; that an unreadable file costs only itself; that `fgu_find_maps.py` encodes text and images exactly as the classifier does; and that a search for a colour ranks the image of that colour first. It uses the real CLIP model from the local cache and never goes online (run the classifier once first). Run from inside the project `venv`:
+
+```
+source venv/bin/activate
+python3 fgu_support_test_classifier.py
+```
+
 **fgu_support_check_repo.py**
 
-Quick consistency checks that need nothing installed and take about a second: every script the README mentions exists, each launcher runs a script that exists, the `.command` and `.sh` files are executable, `run_windows.ps1` is pure ASCII, the `.bat` files keep their CRLF line endings, and every script parses. Run it with `python3 fgu_support_check_repo.py`. It only reads files.
+Quick consistency checks that need nothing installed and take about a second: every script the README mentions exists, each launcher runs a script that exists, the `.command` and `.sh` files are executable, `run_windows.ps1` is pure ASCII, the `.bat` files keep their CRLF line endings, every requirements file that is named exists and lists only bounded version ranges, and every script parses. Run it with `python3 fgu_support_check_repo.py`. It only reads files.
 
 **Continuous integration**
 
-`.github/workflows/ci.yml` runs on every push to any branch (so a branch has a result before you open a pull request, and the checks then show on it): the repo checks above, the safety tests on macOS, and the safety tests on Windows. The Windows job sets itself up with the real launcher (`run_windows.ps1 -SetupOnly`), so it also exercises the first-run download, hash check and install, and fails if a second run does any setup again. The CLIP model is cached between runs. CI can't click through the Windows dialogs, so those still need a human.
+`.github/workflows/ci.yml` runs on every push to any branch (so a branch has a result before you open a pull request, and the checks then show on it): the repo checks above, the safety tests and the classifier correctness tests on macOS and on Windows, and a check of the model-update path against the real Hugging Face (which every other test skips) on both. The Windows job sets itself up with the real launcher (`run_windows.ps1 -SetupOnly`), so it also exercises the first-run download, hash check and install, and fails if a second run does any setup again. The CLIP model is cached between runs. CI can't click through the Windows dialogs, so those still need a human.

@@ -88,7 +88,9 @@ echo "🔄 Verifying dependencies..."
 # hanging if a package genuinely does need to be fetched with no connection.
 # osxphotos>=0.67 requires Python 3.10+ (uses `X | None` type syntax) and fails
 # to import at all on the 3.9 interpreter macOS ships by default -- pin below.
-pip install --quiet --default-timeout=10 torch transformers pillow pillow-heif "osxphotos<0.67"
+# The package ranges live in requirements-classify.txt (shared with the Windows
+# launcher and CI); osxphotos is Mac-only so it stays here.
+pip install --quiet --default-timeout=10 -r requirements-classify.txt "osxphotos<0.67"
 
 # 7. Run Python script with GUI inputs passed as flags
 echo "🚀 Starting classification..."

@@ -92,7 +92,9 @@ echo "🔄 Verifying dependencies..."
 # check for a newer pip. The venv's bundled pip is good enough.
 # --default-timeout keeps this from hanging if a package genuinely does need
 # to be fetched with no connection.
-pip install --quiet --default-timeout=10 pillow pillow-heif opencv-python numpy "osxphotos<0.67"
+# The package ranges live in requirements-grid.txt (shared with the Windows
+# launcher and CI); osxphotos is Mac-only so it stays here.
+pip install --quiet --default-timeout=10 -r requirements-grid.txt "osxphotos<0.67"
 
 # 7. Run Python script with GUI inputs passed as flags
 echo "🚀 Starting grid detection..."
