@@ -81,7 +81,7 @@ def _sidecar_path(image_path):
     """FGU sidecar path for image_path: same directory and base filename, with the
     image's own extension replaced by .xml (map.png -> map.xml) -- NOT map.png.xml.
     Matches the convention fgu_maptest.py's scan_sidecars() and the uvtt2fgu
-    reference tool both expect. Duplicated from detect_grid.py so the two scripts
+    reference tool both expect. Duplicated from fgu_detect_grid.py so the two scripts
     stay independent rather than sharing a module."""
     return os.path.splitext(image_path)[0] + ".xml"
 
@@ -100,7 +100,7 @@ def _unique_path(dest_path):
 
 def move_image_and_sidecar(image_path, dest_dir):
     """Move image_path into dest_dir (collision-safe), bringing along its FGU grid
-    sidecar XML (written by detect_grid.py) if one exists, so the sidecar doesn't end
+    sidecar XML (written by fgu_detect_grid.py) if one exists, so the sidecar doesn't end
     up orphaned pointing at a file that's no longer there. Returns the image's new path."""
     dest_image_path = _unique_path(os.path.join(dest_dir, os.path.basename(image_path)))
     src_sidecar = _sidecar_path(image_path)

@@ -37,7 +37,7 @@ $ToolConfig = @{
     }
     grid     = @{
         Title    = 'RPG Map Grid Detector'
-        Script   = 'detect_grid.py'
+        Script   = 'fgu_detect_grid.py'
         Packages = @('pillow', 'pillow-heif', 'opencv-python', 'numpy')
     }
 }

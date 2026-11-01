@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Safety tests for fgu_classify_maps.py and detect_grid.py.
+Safety tests for fgu_classify_maps.py and fgu_detect_grid.py.
 
 "Safety" here means: neither script does anything destructive beyond what's
 explicitly allowed --
@@ -8,7 +8,7 @@ explicitly allowed --
     their matching .xml sidecar along), but only once the user has opted in
     (-y, or answering "y" to the confirmation prompt), and never by
     overwriting a different file that's already at the destination.
-  - detect_grid.py may create or overwrite a map's .xml sidecar, but only
+  - fgu_detect_grid.py may create or overwrite a map's .xml sidecar, but only
     once the user has opted in (-f/--force); otherwise an existing sidecar
     must be left completely untouched.
   - Neither script writes anywhere outside the directory tree(s) it was
@@ -89,7 +89,7 @@ def check(condition, message):
 
 def make_grid_image(path, spacing=50, size=300):
     """A synthetic image with a visible square grid drawn on it: enough for
-    detect_grid.py to find a real grid, and a perfectly fine throwaway image
+    fgu_detect_grid.py to find a real grid, and a perfectly fine throwaway image
     for fgu_classify_maps.py's file-handling tests (its content doesn't matter
     there, only that it's a valid, byte-comparable image file)."""
     rng = np.random.default_rng(0)
@@ -146,7 +146,7 @@ def assert_repo_untouched(before, after):
 
 
 # Narrow, explicit, and justified: writes made by third-party libraries these
-# scripts depend on, not by fgu_classify_maps.py's or detect_grid.py's own logic
+# scripts depend on, not by fgu_classify_maps.py's or fgu_detect_grid.py's own logic
 # (neither imports tempfile, and neither references the HF cache directly --
 # grep the source if in doubt). Anything not matching one of these two is
 # still checked against allowed_roots as normal.
@@ -273,7 +273,7 @@ DESTRUCTIVE_PATTERNS = [r"\bos\.remove\(", r"\bos\.unlink\(", r"\bshutil\.rmtree
 
 def test_no_destructive_calls_in_source():
     print("\n[static] no delete/truncate calls in either script")
-    for script in ("fgu_classify_maps.py", "detect_grid.py"):
+    for script in ("fgu_classify_maps.py", "fgu_detect_grid.py"):
         source = open(os.path.join(REPO_ROOT, script)).read()
         for pattern in DESTRUCTIVE_PATTERNS:
             check(re.search(pattern, source) is None, f"{script} does not call {pattern}")
@@ -393,22 +393,22 @@ def test_classify_move_to_different_tree_only_touches_both_named_dirs():
 
 
 # ---------------------------------------------------------------------------
-# detect_grid.py
+# fgu_detect_grid.py
 # ---------------------------------------------------------------------------
 def test_detect_grid_only_creates_the_sidecar():
-    print("\n[detect_grid.py] writes only the .xml, never touches the image")
+    print("\n[fgu_detect_grid.py] writes only the .xml, never touches the image")
     with tempfile.TemporaryDirectory() as tmp:
         img = os.path.join(tmp, "map.png")
         make_grid_image(img)
         before = read_bytes(img)
 
-        run_in_process("detect_grid.py", ["--dir", tmp], allowed_roots=[tmp])
+        run_in_process("fgu_detect_grid.py", ["--dir", tmp], allowed_roots=[tmp])
         check(read_bytes(img) == before, "image content unchanged")
         check(all_files(tmp) == ["map.png", "map.xml"], "only the sidecar was added")
 
 
 def test_detect_grid_skips_existing_sidecar_without_force():
-    print("\n[detect_grid.py] existing sidecar left untouched without -f")
+    print("\n[fgu_detect_grid.py] existing sidecar left untouched without -f")
     with tempfile.TemporaryDirectory() as tmp:
         img = os.path.join(tmp, "map.png")
         make_grid_image(img)
@@ -417,12 +417,12 @@ def test_detect_grid_skips_existing_sidecar_without_force():
         with open(sidecar, "w") as f:
             f.write(sentinel)
 
-        run_in_process("detect_grid.py", ["--dir", tmp], allowed_roots=[tmp])
+        run_in_process("fgu_detect_grid.py", ["--dir", tmp], allowed_roots=[tmp])
         check(read_bytes(sidecar).decode() == sentinel, "existing sidecar is byte-for-byte unchanged")
 
 
 def test_detect_grid_force_overwrites_but_preserves_other_data():
-    print("\n[detect_grid.py] -f updates the grid but preserves unrelated existing sidecar data")
+    print("\n[fgu_detect_grid.py] -f updates the grid but preserves unrelated existing sidecar data")
     with tempfile.TemporaryDirectory() as tmp:
         img = os.path.join(tmp, "map.png")
         make_grid_image(img, spacing=50)
@@ -435,7 +435,7 @@ def test_detect_grid_force_overwrites_but_preserves_other_data():
                 '</root>'
             )
 
-        run_in_process("detect_grid.py", ["--dir", tmp, "-f"], allowed_roots=[tmp])
+        run_in_process("fgu_detect_grid.py", ["--dir", tmp, "-f"], allowed_roots=[tmp])
         updated = open(sidecar).read()
         check("999,999" not in updated, "stale sentinel gridsize value was actually replaced")
         check("<occluder>" in updated and "-5.0,-5.0,5.0,5.0" in updated,
