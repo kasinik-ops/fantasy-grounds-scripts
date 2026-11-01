@@ -1,9 +1,12 @@
 name: CI
 
 on:
+  # Every push to any branch, so a branch has a result before anyone opens a PR
+  # (the checks then appear on the PR by themselves). pull_request is deliberately
+  # not listed: for a same-repo PR it would run everything a second time. The
+  # trade-off is that a PR from a fork is not tested.
   push:
-    branches: [main]
-  pull_request:
+    branches: ["**"]
   workflow_dispatch:
 
 permissions:

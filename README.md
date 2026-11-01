@@ -148,4 +148,4 @@ Quick consistency checks that need nothing installed and take about a second: ev
 
 **Continuous integration**
 
-`.github/workflows/ci.yml` runs on every pull request and every push to `main`: the repo checks above, the safety tests on macOS, and the safety tests on Windows. The Windows job sets itself up with the real launcher (`run_windows.ps1 -SetupOnly`), so it also exercises the first-run download, hash check and install, and fails if a second run does any setup again. The CLIP model is cached between runs. CI can't click through the Windows dialogs, so those still need a human.
+`.github/workflows/ci.yml` runs on every push to any branch (so a branch has a result before you open a pull request, and the checks then show on it): the repo checks above, the safety tests on macOS, and the safety tests on Windows. The Windows job sets itself up with the real launcher (`run_windows.ps1 -SetupOnly`), so it also exercises the first-run download, hash check and install, and fails if a second run does any setup again. The CLIP model is cached between runs. CI can't click through the Windows dialogs, so those still need a human.
