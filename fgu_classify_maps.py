@@ -1,5 +1,6 @@
 import os
 import sys
+import csv
 import argparse
 import subprocess
 import shutil
@@ -45,6 +46,25 @@ parser.add_argument("--force-update", action="store_true",
 parser.add_argument("--no-update-check", action="store_true",
                      help="Never check Hugging Face for a model update this run -- use "
                           "whatever is already cached, fully offline. For limited/no internet.")
+parser.add_argument("--batch-size", type=int, default=16,
+                     help="How many images to run through the model at once (default: 16). "
+                          "Raise it on a machine with plenty of memory; lower it if memory is tight.")
+parser.add_argument("--report", type=str, default=None, metavar="FILE.csv",
+                     help="Write a CSV of what each image was tagged (and where it went). Combined "
+                          "with --no-move this is a dry run: you can review the tags before "
+                          "anything moves. An existing file is never overwritten; the next free "
+                          "name is used instead.")
+parser.add_argument("--detect-photos", action="store_true",
+                     help="Experimental: also flag images that look like photographs rather than "
+                          "map art, and tag them 'not a map'. Off by default; check a --report "
+                          "first, since it hasn't been tuned against a real library.")
+parser.add_argument("--photo-threshold", type=float, default=80.0,
+                     help="With --detect-photos: minimum percent confidence that an image is a "
+                          "photo before it is tagged 'not a map' (default: 80.0)")
+parser.add_argument("--undo", type=str, default=None, metavar="MANIFEST",
+                     help="Move every file listed in a fgu_moves_*.jsonl manifest (written "
+                          "whenever a run moves files) back to where it came from. Never "
+                          "overwrites, and leaves emptied category folders in place.")
 args = parser.parse_args()
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -252,8 +272,110 @@ def maybe_allow_online_model_check(check_update, force_update, no_update_check):
     print("   Downloading model..." if first_time else "   Downloading updated model...")
     return True
 
+# --- CLIP ENCODING ---
+# Text and images are encoded through CLIPModel's long-standing submodules
+# (text_model / vision_model and their *_projection layers) rather than
+# get_text_features() / get_image_features(): the return type of those has
+# changed between transformers releases (4.x vs 5.x differ), while the
+# submodules and their pooled outputs have not. The maths is exactly what
+# CLIPModel.forward does, so the probabilities are the same as before; the
+# difference is that the category prompts are now encoded once per run instead
+# of once per image, and images go through the model in batches.
+
+def _pooled(output):
+    """The pooled embedding from a CLIP text/vision submodule output (a ModelOutput or a plain tuple)."""
+    pooled = getattr(output, "pooler_output", None)
+    return pooled if pooled is not None else output[1]
+
+def encode_text_features(model, processor, prompts):
+    """L2-normalised text embeddings, one row per prompt."""
+    inputs = processor(text=prompts, return_tensors="pt", padding=True).to(DEVICE)
+    with torch.no_grad():
+        out = model.text_model(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"])
+        features = model.text_projection(_pooled(out))
+    return features / features.norm(dim=-1, keepdim=True)
+
+def encode_image_features(model, pixel_values):
+    """L2-normalised image embeddings, one row per image in the batch."""
+    with torch.no_grad():
+        out = model.vision_model(pixel_values=pixel_values.to(DEVICE))
+        features = model.visual_projection(_pooled(out))
+    return features / features.norm(dim=-1, keepdim=True)
+
+def softmax_probs(model, image_features, text_features):
+    """Per image, the probability of each prompt (rows sum to 1)."""
+    with torch.no_grad():
+        return (model.logit_scale.exp() * image_features @ text_features.T).softmax(dim=1)
+
+def preprocess_image(processor, path):
+    """The model-ready 1x3x224x224 tensor for one image file. Each image is decoded,
+    converted and shrunk on its own, so a huge map never sits in memory alongside
+    the rest of its batch -- only the small tensors are batched. The file is closed
+    before this returns (on Windows an open file can't be moved)."""
+    with Image.open(path) as opened:
+        image = opened.convert("RGB")
+    return processor(images=image, return_tensors="pt")["pixel_values"]
+
+
+# --- OPTIONAL PHOTO CHECK (--detect-photos) ---
+# A two-way zero-shot test run on the same image embedding. Experimental: the
+# thresholds are not tuned against a real library, so it is opt-in.
+PHOTO_PROMPTS = [
+    "an illustrated top-down map for a tabletop role-playing game",
+    "a photograph of a real-world scene, person, animal or object",
+]
+NOT_A_MAP_TAG = "not a map"
+
+
+# --- REPORT + MOVE MANIFEST ---
+class _Report:
+    """Incremental CSV of what each image was tagged, flushed row by row so an
+    interrupted run still leaves a usable file. Never overwrites an existing file."""
+    FIELDS = ["file", "tag", "confidence_percent", "photo_probability_percent", "moved_to", "status"]
+
+    def __init__(self, path):
+        self.path = _unique_path(os.path.abspath(path))
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self._file = open(self.path, "w", newline="", encoding="utf-8")
+        self._writer = csv.DictWriter(self._file, fieldnames=self.FIELDS)
+        self._writer.writeheader()
+        self._file.flush()
+        print(f"📝 Writing report to {self.path}")
+
+    def add(self, **row):
+        self._writer.writerow({k: row.get(k, "") for k in self.FIELDS})
+        self._file.flush()
+
+    def close(self):
+        self._file.close()
+
+class _MoveManifest:
+    """A JSON-lines record of every file moved this run (and whether its .xml
+    sidecar went with it), written as each move happens, so --undo can reverse
+    them. Only created once the first file actually moves."""
+
+    def __init__(self, move_root):
+        self.path = _unique_path(os.path.join(os.path.abspath(move_root), time.strftime("fgu_moves_%Y-%m-%d_%H%M%S.jsonl")))
+        self._file = None
+        self.count = 0
+
+    def add(self, old_path, new_path, had_sidecar):
+        if self._file is None:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            self._file = open(self.path, "a", encoding="utf-8")
+        record = {"from": os.path.abspath(old_path), "to": os.path.abspath(new_path), "sidecar": bool(had_sidecar)}
+        self._file.write(json.dumps(record) + "\n")
+        self._file.flush()
+        self.count += 1
+
+    def close(self):
+        if self._file is not None:
+            self._file.close()
+
+
 def run_classification(image_paths, is_apple_photos=False, unclassified_threshold=25.0, move_root=None,
-                        check_update=False, force_update=False, no_update_check=False):
+                        check_update=False, force_update=False, no_update_check=False,
+                        batch_size=16, report_path=None, detect_photos=False, photo_threshold=80.0):
     print("\n--- Category Tagging (CLIP AI) ---")
     model_id = MODEL_ID
 
@@ -267,61 +389,164 @@ def run_classification(image_paths, is_apple_photos=False, unclassified_threshol
     processor = CLIPProcessor.from_pretrained(model_id, local_files_only=not allow_online)
 
     keywords = list(CATEGORIES.keys())
-    prompts = list(CATEGORIES.values())
+    text_features = encode_text_features(model, processor, list(CATEGORIES.values()))
+    photo_features = encode_text_features(model, processor, PHOTO_PROMPTS) if detect_photos else None
+
+    report = _Report(report_path) if report_path else None
+    manifest = _MoveManifest(move_root) if (move_root and not is_apple_photos) else None
+    total = len(image_paths)
     updated_paths = []
 
-    for idx, (path, photo_uuid, photo_obj) in enumerate(image_paths, start=1):
-        current_path = path
-        try:
-            image = Image.open(current_path).convert("RGB")
-            inputs = processor(text=prompts, images=image, return_tensors="pt", padding=True).to(DEVICE)
-
-            with torch.no_grad():
-                outputs = model(**inputs)
-                probs = outputs.logits_per_image.softmax(dim=1)
-
-            best_idx = probs.argmax().item()
-            confidence = probs[0][best_idx].item() * 100
-            assigned_tag = keywords[best_idx] if confidence >= unclassified_threshold else "unclassified"
-
-            print(f"[{idx}/{len(image_paths)}] {os.path.basename(current_path)} -> Tagged: '{assigned_tag}' ({confidence:.1f}%)")
-
-            if is_apple_photos and photo_uuid:
-                # Write back to Apple Photos
-                script = f'''
-                tell application "Photos"
-                    set targetPhoto to media item id "{photo_uuid}"
-                    set currentKeywords to keywords of targetPhoto
-                    if currentKeywords is missing value then set currentKeywords to {{}}
-                    if currentKeywords does not contain "{assigned_tag}" then
-                        copy "{assigned_tag}" to end of currentKeywords
-                        set keywords of targetPhoto to currentKeywords
-                    end if
-                end tell
-                '''
-                subprocess.run(["osascript", "-e", script], check=False, stdout=subprocess.DEVNULL)
-
-            if move_root:
-                dest_dir = os.path.join(move_root, assigned_tag)
-                os.makedirs(dest_dir, exist_ok=True)
+    try:
+        for start in range(0, total, max(1, batch_size)):
+            # 1. Load + preprocess each image on its own; one unreadable file
+            #    must not take down the rest of its batch.
+            entries = []
+            for offset, (path, photo_uuid, photo_obj) in enumerate(image_paths[start:start + batch_size]):
+                entry = {"idx": start + offset + 1, "path": path, "uuid": photo_uuid, "obj": photo_obj,
+                         "pixels": None, "error": None}
                 try:
-                    if is_apple_photos:
-                        if photo_obj is not None:
-                            exported = photo_obj.export(dest_dir)
-                            if exported:
-                                print(f"    -> exported copy to {exported[0]}")
-                    else:
-                        current_path = move_image_and_sidecar(current_path, dest_dir)
-                        print(f"    -> moved to {current_path}")
-                except Exception as move_err:
-                    print(f"    -> ❌ move/export failed: {move_err}")
+                    entry["pixels"] = preprocess_image(processor, path)
+                except Exception as e:
+                    entry["error"] = e
+                entries.append(entry)
 
-        except Exception as e:
-            print(f"[{idx}/{len(image_paths)}] ❌ Error: {e}")
+            # 2. One model pass for the whole batch.
+            good = [e for e in entries if e["pixels"] is not None]
+            if good:
+                try:
+                    image_features = encode_image_features(model, torch.cat([e["pixels"] for e in good]))
+                    probs = softmax_probs(model, image_features, text_features).cpu()
+                    photo_probs = softmax_probs(model, image_features, photo_features).cpu() if detect_photos else None
+                    for i, e in enumerate(good):
+                        e["probs"] = probs[i]
+                        e["photo_pct"] = photo_probs[i][1].item() * 100 if detect_photos else None
+                except Exception as batch_err:
+                    for e in good:
+                        e["error"], e["pixels"] = batch_err, None
 
-        updated_paths.append((current_path, photo_uuid, photo_obj))
+            # 3. Act on each image in order: tag, write back, move, record.
+            for e in entries:
+                path, photo_uuid, photo_obj, idx = e["path"], e["uuid"], e["obj"], e["idx"]
+                current_path = path
+                if e["error"] is not None or e["pixels"] is None:
+                    print(f"[{idx}/{total}] ❌ Error: {e['error']}")
+                    if report:
+                        report.add(file=path, status=f"error: {e['error']}")
+                    updated_paths.append((current_path, photo_uuid, photo_obj))
+                    continue
 
+                best_idx = int(e["probs"].argmax())
+                confidence = float(e["probs"][best_idx]) * 100
+                assigned_tag = keywords[best_idx] if confidence >= unclassified_threshold else "unclassified"
+                detail = f"{confidence:.1f}%"
+                if detect_photos and e["photo_pct"] >= photo_threshold:
+                    assigned_tag, detail = NOT_A_MAP_TAG, f"looks like a photo, {e['photo_pct']:.1f}%"
+                print(f"[{idx}/{total}] {os.path.basename(path)} -> Tagged: '{assigned_tag}' ({detail})")
+
+                status, moved_to = "ok", ""
+                if is_apple_photos and photo_uuid:
+                    # Write back to Apple Photos
+                    script = f'''
+                    tell application "Photos"
+                        set targetPhoto to media item id "{photo_uuid}"
+                        set currentKeywords to keywords of targetPhoto
+                        if currentKeywords is missing value then set currentKeywords to {{}}
+                        if currentKeywords does not contain "{assigned_tag}" then
+                            copy "{assigned_tag}" to end of currentKeywords
+                            set keywords of targetPhoto to currentKeywords
+                        end if
+                    end tell
+                    '''
+                    subprocess.run(["osascript", "-e", script], check=False, stdout=subprocess.DEVNULL)
+
+                if move_root:
+                    dest_dir = os.path.join(move_root, assigned_tag)
+                    os.makedirs(dest_dir, exist_ok=True)
+                    try:
+                        if is_apple_photos:
+                            if photo_obj is not None:
+                                exported = photo_obj.export(dest_dir)
+                                if exported:
+                                    moved_to = exported[0]      # a copy; the original stays in Photos
+                                    print(f"    -> exported copy to {exported[0]}")
+                        else:
+                            had_sidecar = os.path.exists(_sidecar_path(path))
+                            current_path = moved_to = move_image_and_sidecar(path, dest_dir)
+                            manifest.add(path, current_path, had_sidecar)
+                            print(f"    -> moved to {current_path}")
+                    except Exception as move_err:
+                        status = f"move/export failed: {move_err}"
+                        print(f"    -> ❌ move/export failed: {move_err}")
+
+                if report:
+                    report.add(file=path, tag=assigned_tag, confidence_percent=f"{confidence:.1f}",
+                               photo_probability_percent="" if e["photo_pct"] is None else f"{e['photo_pct']:.1f}",
+                               moved_to=moved_to, status=status)
+                updated_paths.append((current_path, photo_uuid, photo_obj))
+    finally:
+        if report:
+            report.close()
+        if manifest:
+            manifest.close()
+
+    if manifest and manifest.count:
+        print(f"\n↩️  Moved {manifest.count} file(s). To put them all back:\n"
+              f"    python fgu_classify_maps.py --undo \"{manifest.path}\"")
     return updated_paths
+
+
+def undo_moves(manifest_path, assume_yes=False):
+    """Move every file listed in a move manifest back to where it came from. Only
+    moves: it never overwrites a file (an occupied original location is skipped and
+    reported), never deletes anything, and leaves emptied category folders alone."""
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            entries = [json.loads(line) for line in f if line.strip()]
+    except (OSError, ValueError) as e:
+        print(f"❌ Could not read the manifest {manifest_path}: {e}")
+        return
+
+    plan, skipped = [], []
+    for entry in reversed(entries):          # newest move first
+        now_at, original = entry["to"], entry["from"]
+        if not os.path.isfile(now_at):
+            skipped.append((now_at, "it is no longer at the place it was moved to"))
+        elif os.path.exists(original):
+            skipped.append((now_at, f"something already exists at the original location, {original}"))
+        else:
+            plan.append((now_at, original, entry.get("sidecar", False)))
+
+    print(f"\n↩️  {len(plan)} file(s) can be moved back; {len(skipped)} will be skipped.")
+    for now_at, reason in skipped[:10]:
+        print(f"    skipping {now_at}\n      because {reason}")
+    if len(skipped) > 10:
+        print(f"    ... and {len(skipped) - 10} more")
+    if not plan:
+        return
+
+    if not assume_yes:
+        try:
+            confirm = input("Proceed? [y/N]: ").strip().lower()
+        except EOFError:
+            confirm = ""
+        if confirm != "y":
+            print("Nothing was moved.")
+            return
+
+    restored = 0
+    for now_at, original, had_sidecar in plan:
+        try:
+            os.makedirs(os.path.dirname(original), exist_ok=True)
+            shutil.move(now_at, original)
+            sidecar_now, sidecar_original = _sidecar_path(now_at), _sidecar_path(original)
+            if had_sidecar and os.path.exists(sidecar_now) and not os.path.exists(sidecar_original):
+                shutil.move(sidecar_now, sidecar_original)
+            restored += 1
+        except Exception as e:
+            print(f"    ❌ could not move {now_at} back: {e}")
+    print(f"✅ Moved {restored} file(s) back. Any category folders left empty were not removed.")
+
 
 def _scan_local_dir(folder):
     """[(path, None, None), ...] for supported image files sitting directly inside
@@ -352,6 +577,13 @@ def _scan_album(album_name):
     return paths
 
 def main():
+    if args.undo:
+        undo_moves(args.undo, args.yes)
+        return
+    if args.batch_size < 1:
+        print("❌ --batch-size must be at least 1.")
+        return
+
     using_dir = bool(getattr(args, 'dir') and args.dir)
     using_album = bool(getattr(args, 'album') and args.album)
     is_apple_photos = using_album
@@ -382,6 +614,10 @@ def main():
         check_update=args.check_update,
         force_update=args.force_update,
         no_update_check=args.no_update_check,
+        batch_size=args.batch_size,
+        report_path=args.report,
+        detect_photos=args.detect_photos,
+        photo_threshold=args.photo_threshold,
     )
 
 if __name__ == "__main__":
