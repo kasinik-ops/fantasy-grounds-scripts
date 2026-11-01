@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import xml.etree.ElementTree as ET
 import cv2
@@ -6,10 +7,10 @@ import numpy as np
 import pillow_heif
 from PIL import Image
 
-# Windows support is a planned future feature. This script's own logic is already
-# OS-agnostic (os.path/os.walk work cross-platform) -- a future Windows launcher
-# would just be a separate .bat/.ps1 calling this same script, nothing else to
-# prepare for that now.
+# This script's own logic is OS-agnostic (os.path/os.walk work cross-platform);
+# only Apple Photos support (--album) is Mac-only. On Windows it's started by
+# run_grid_detector.bat -> run_windows.ps1, which handles installing Python and
+# the packages; --album is refused with a clear message there (see main()).
 
 pillow_heif.register_heif_opener()  # lets PIL open .heic/.heif (iPhone's default photo format)
 
@@ -49,8 +50,8 @@ FGU_XML_DATAVERSION = "20210302"
 def _sidecar_path(image_path):
     """FGU sidecar path for image_path: same directory and base filename, with the
     image's own extension replaced by .xml (map.png -> map.xml) -- NOT map.png.xml.
-    Matches the convention fgu_maptest.py's scan_sidecars() and the uvtt2fgu
-    reference tool both expect. Duplicated from classify_maps.py so the two scripts
+    Matches the convention fgu_support_maptest.py's scan_sidecars() and the uvtt2fgu
+    reference tool both expect. Duplicated from fgu_classify_maps.py so the two scripts
     stay independent rather than sharing a module."""
     return os.path.splitext(image_path)[0] + ".xml"
 
@@ -236,7 +237,7 @@ def run_grid_detection(image_paths, force=False, min_grid_px=20, max_grid_fracti
 
 def _scan_local_dir(folder):
     """[(path, None, None), ...] for supported image files under folder, recursing
-    into subdirectories so maps sorted into category folders by classify_maps.py
+    into subdirectories so maps sorted into category folders by fgu_classify_maps.py
     are still found."""
     paths = []
     for root, _, files in os.walk(folder):
@@ -274,6 +275,9 @@ def main():
         image_paths = _scan_local_dir(args.dir)
         print(f"📂 Found {len(image_paths)} map files (including subfolders) for grid detection.")
     else:
+        if sys.platform != "darwin":
+            print("❌ Apple Photos albums are only supported on macOS. Use --dir with a folder of images instead.")
+            return
         image_paths = _scan_album(args.album)
         print(f"📸 Found {len(image_paths)} map files in Apple Photos album '{args.album}'.")
 

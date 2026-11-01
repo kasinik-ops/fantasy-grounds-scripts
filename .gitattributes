@@ -1,0 +1,5 @@
+# Windows batch files must keep CRLF line endings: cmd.exe can misparse LF-only .bat files.
+# Shell scripts must keep LF so a Windows checkout cannot break them on a Mac.
+*.bat     text eol=crlf
+*.command text eol=lf
+*.sh      text eol=lf

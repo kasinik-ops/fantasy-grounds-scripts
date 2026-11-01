@@ -96,7 +96,7 @@ pip install --quiet --default-timeout=10 pillow pillow-heif opencv-python numpy 
 
 # 7. Run Python script with GUI inputs passed as flags
 echo "🚀 Starting grid detection..."
-python detect_grid.py "${PY_ARGS[@]}"
+python fgu_detect_grid.py "${PY_ARGS[@]}"
 
 echo ""
 echo "✅ Done! Press any key to close."

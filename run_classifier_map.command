@@ -50,7 +50,7 @@ fi
 PY_ARGS=("$MODE_FLAG" "$LOCATION")
 
 # 4. Destination directory to sort classified files into by category.
-# The launcher only asks WHERE; classify_maps.py itself warns how many files are
+# The launcher only asks WHERE; fgu_classify_maps.py itself warns how many files are
 # affected and asks for confirmation before moving/exporting anything.
 if [ "$SOURCE_TYPE" == "Local Folder" ]; then
     MOVE_DEST=$(osascript -e "text returned of (display dialog \"Destination directory to sort classified files into (a subfolder per category will be created inside it):\" default answer \"$(osa_escape "$LOCATION")\")")
@@ -83,7 +83,7 @@ source venv/bin/activate
 echo "🔄 Verifying dependencies..."
 # No --upgrade here: that would hit the network on every single launch just to
 # check for a newer pip, which is the same kind of unnecessary always-on
-# network dependency classify_maps.py's own model-update check now avoids.
+# network dependency fgu_classify_maps.py's own model-update check now avoids.
 # The venv's bundled pip is good enough. --default-timeout keeps this from
 # hanging if a package genuinely does need to be fetched with no connection.
 # osxphotos>=0.67 requires Python 3.10+ (uses `X | None` type syntax) and fails
@@ -92,7 +92,7 @@ pip install --quiet --default-timeout=10 torch transformers pillow pillow-heif "
 
 # 7. Run Python script with GUI inputs passed as flags
 echo "🚀 Starting classification..."
-python classify_maps.py "${PY_ARGS[@]}"
+python fgu_classify_maps.py "${PY_ARGS[@]}"
 
 echo ""
 echo "✅ Done! Press any key to close."
