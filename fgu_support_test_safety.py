@@ -193,7 +193,10 @@ class WriteRecorder:
     def __init__(self):
         self.touched = []
         self._real_open = builtins.open
+        self._real_io_open = io.open
         self._real_move = shutil.move
+        self._real_replace = os.replace
+        self._real_rename = os.rename
         self._real_makedirs = os.makedirs
         self._real_et_write = ET.ElementTree.write
 
@@ -208,9 +211,22 @@ class WriteRecorder:
             self._record(file)
         return self._real_open(file, mode, *args, **kwargs)
 
+    # Moves, renames and replaces change BOTH ends: the destination gains a file
+    # and the source loses one, so both must be somewhere the run was told to use.
     def _patched_move(self, src, dst, *args, **kwargs):
+        self._record(src)
         self._record(dst)
         return self._real_move(src, dst, *args, **kwargs)
+
+    def _patched_replace(self, src, dst, *args, **kwargs):
+        self._record(src)
+        self._record(dst)
+        return self._real_replace(src, dst, *args, **kwargs)
+
+    def _patched_rename(self, src, dst, *args, **kwargs):
+        self._record(src)
+        self._record(dst)
+        return self._real_rename(src, dst, *args, **kwargs)
 
     def _patched_makedirs(self, name, *args, **kwargs):
         self._record(name)
@@ -229,15 +245,24 @@ class WriteRecorder:
             recorder._record(file_or_filename)
             return real_et_write(tree_self, file_or_filename, *args, **kwargs)
 
+        # io.open is the very same function as builtins.open, but patching one name
+        # doesn't change the other -- and np.savez, zipfile and pathlib all call
+        # io.open, so patching only builtins.open would leave them invisible.
         builtins.open = self._patched_open
+        io.open = self._patched_open
         shutil.move = self._patched_move
+        os.replace = self._patched_replace
+        os.rename = self._patched_rename
         os.makedirs = self._patched_makedirs
         ET.ElementTree.write = patched_et_write
         return self
 
     def __exit__(self, *exc_info):
         builtins.open = self._real_open
+        io.open = self._real_io_open
         shutil.move = self._real_move
+        os.replace = self._real_replace
+        os.rename = self._real_rename
         os.makedirs = self._real_makedirs
         ET.ElementTree.write = self._real_et_write
 
@@ -288,7 +313,10 @@ def run_in_process(script, script_args, allowed_roots, stdin_text=""):
 # ---------------------------------------------------------------------------
 # Static check: neither script should contain a delete/truncate call at all.
 # ---------------------------------------------------------------------------
-DESTRUCTIVE_PATTERNS = [r"\bos\.remove\(", r"\bos\.unlink\(", r"\bshutil\.rmtree\(", r"\.truncate\("]
+DESTRUCTIVE_PATTERNS = [
+    r"\bos\.remove\(", r"\.unlink\(", r"\bshutil\.rmtree\(", r"\.truncate\(",
+    r"\.rmdir\(", r"\bos\.removedirs\(",
+]
 
 
 def test_no_destructive_calls_in_source():
