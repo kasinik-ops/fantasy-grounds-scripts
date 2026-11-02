@@ -654,7 +654,7 @@ p { margin:6px 0; }
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-let lib = "", busy = false, jobSince = 0, pollTimer = null, wantResultsFor = null, browseFolder = null, browsePage = 0;
+let lib = "", busy = false, jobSince = 0, lastLine = "", pollTimer = null, wantResultsFor = null, browseFolder = null, browsePage = 0;
 
 function remember(value) { try { localStorage.setItem("fgu-lib", value); } catch (e) {} }
 function recall() { try { return localStorage.getItem("fgu-lib") || ""; } catch (e) { return ""; } }
@@ -780,7 +780,7 @@ $("next").addEventListener("click", () => { browsePage += 1; loadPage(); });
 async function run(action, options) {
   try {
     await api("/api/run", { action, lib, options: options || {} });
-    jobSince = 0; $("log").textContent = ""; setBusy(true); poll();
+    jobSince = 0; lastLine = ""; $("log").textContent = ""; setBusy(true); poll();
     return true;
   } catch (e) { alert(e.message); return false; }
 }
@@ -792,8 +792,11 @@ async function poll() {
   const log = $("log"), atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   if (job.lines.length) { log.textContent += job.lines.join("\n") + "\n"; }
   jobSince = job.next;
+  if (job.lines.length) lastLine = job.lines[job.lines.length - 1].trim();
   if (atBottom) log.scrollTop = log.scrollHeight;
-  $("jobtitle").textContent = job.title ? job.title + " \u2014 " + job.status : "Nothing running";
+  // While it runs, the newest line (e.g. "[1200/4322] 27% . 7.1 maps/s . about 7 min left") sits next to the title.
+  $("jobtitle").textContent = job.title ? job.title + " \u2014 " + job.status
+      + (job.status === "running" && lastLine ? "  \u00b7  " + lastLine : "") : "Nothing running";
   if (job.status === "running") { setBusy(true); pollTimer = setTimeout(poll, 800); return; }
   setBusy(false);
   if (job.status === "failed") log.textContent += "\n(It finished with an error; see above.)\n";

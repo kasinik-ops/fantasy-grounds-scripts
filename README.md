@@ -131,7 +131,9 @@ For more control (such as `--top`), open a terminal in this folder and use the P
    python fgu_find_maps.py search --dir "/path/to/maps" "tavern interior at night"
    ```
 
-   The first time, it reads every map once to learn what it looks like. That is the slow part and scales with the number of maps and their size. It prints its progress, and it saves as it goes, so if you stop it and run it again it carries on rather than starting over. After that a search takes a few seconds.
+   The first time, it reads every map once to learn what it looks like. That is the slow part and scales with the number of maps and their size. For scale: a 4,300-map, 9 GB library took about 10 minutes on an Apple M1 Pro (roughly 7 maps a second), and most of that was decoding the images rather than the AI model. Other computers, and computers without a fast GPU, will be slower, and it has not been timed on Windows. After that a search takes a few seconds.
+
+It should never look stuck. It says when it is loading the model (a few seconds, before anything else appears), then prints a line after every batch with the percent done, the speed and an estimate of the time left. A very large map is announced before it is read (the biggest ones take a few seconds each), and if more than 5 seconds pass without a line it prints "still working". It saves as it goes, so if you stop it and run it again it carries on rather than starting over. The window shows the newest of these lines next to the job's title while it runs.
 2. **Open the picture page.** When it finishes it prints the path of an HTML page, something like `.../maps/.fgu_map_index/search_tavern-interior-at-night_2026-11-01_114716.html`, and lists the best matches in the terminal. Open that page in a browser, or add `--open` to the command to have it open for you. You get a grid of thumbnails, best match first, with the folder and a similarity score under each. Click a thumbnail to open the real map file.
 3. **Use the map.** From there, copy it (and its `.xml`) into Fantasy Grounds as described under **Getting a map into Fantasy Grounds** below.
 

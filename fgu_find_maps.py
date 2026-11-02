@@ -65,6 +65,7 @@ THUMB_SIZE = 256
 SAVE_EVERY_BATCHES = 10               # an interrupted run keeps what it has finished
 SHEET_PAGE_SIZE = 96                  # maps per picture page; a library is split across many pages
 MAX_SEARCH_RESULTS = 500              # the most a search will put on one page
+HEARTBEAT_SECONDS = 5                 # while reading, never stay silent longer than this between maps
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 
@@ -195,12 +196,25 @@ def _thumb_name(rel, size, mtime_ns):
     return hashlib.sha1(f"{rel}|{size}|{mtime_ns}".encode("utf-8")).hexdigest()[:20] + ".jpg"
 
 
-def read_image(library, rel, thumb_name, processor):
-    """(model-ready tensor, wrote_thumbnail) for one map. The map is only read. The
-    thumbnail is written once, and an existing one is never rewritten."""
+def _duration(seconds):
+    """'40 s', '12 min' or '1 h 20 min'."""
+    seconds = int(round(seconds))
+    if seconds < 90:
+        return f"{seconds} s"
+    if seconds < 3600:
+        return f"{round(seconds / 60)} min"
+    return f"{seconds // 3600} h {round(seconds % 3600 / 60)} min"
+
+
+def read_image(library, rel, thumb_name, processor, on_large=None):
+    """The model-ready tensor for one map. The map is only read. The thumbnail is written
+    once, and an existing one is never rewritten. on_large(megapixels), if given, is called
+    before a very large map is decoded, which can take a while."""
     full = os.path.join(library, *rel.split("/"))
     with Image.open(full) as opened:
         if opened.width * opened.height > HUGE_IMAGE_PIXELS:
+            if on_large:
+                on_large(opened.width * opened.height / 1e6)
             opened.draft("RGB", (1024, 1024))   # only JPEG can; for other formats this does nothing
         image = opened.convert("RGB")
     pixels = processor(images=image, return_tensors="pt")["pixel_values"]
@@ -249,27 +263,43 @@ def update_index(library, batch_size=16):
     print(f"📚 {len(on_disk)} map(s) in the library: {reused} already indexed, {len(todo)} to read"
           + (f", {len(still_failed)} unreadable (skipped until they change)." if still_failed else "."))
     if todo:
+        print("   Loading the AI model (a few seconds)...", flush=True)
         loaded = load_model()
         if loaded is None:
             return None
         model, processor = loaded
+        print(f"   Reading maps. A progress line follows every {batch_size}, and anything slow is announced.", flush=True)
         batches_since_save = 0
+        started = last_print = time.time()
         for start in range(0, len(todo), batch_size):
             chunk, tensors, kept = todo[start:start + batch_size], [], []
-            for rel, size, mtime in chunk:
+            for position, (rel, size, mtime) in enumerate(chunk, 1):
                 name = _thumb_name(rel, size, mtime)
+                label = os.path.basename(rel)
+
+                def announce(megapixels, label=label):
+                    print(f"   large map ({megapixels:,.0f} megapixels): {label} -- this one can take a while", flush=True)
                 try:
-                    tensors.append(read_image(library, rel, name, processor))
+                    tensors.append(read_image(library, rel, name, processor, on_large=announce))
                     kept.append((rel, size, mtime, name))
                 except Exception as e:
                     still_failed.append((rel, size, mtime))
-                    print(f"   ⚠️  couldn't read {rel}: {e}")
+                    print(f"   ⚠️  couldn't read {rel}: {e}", flush=True)
+                if time.time() - last_print >= HEARTBEAT_SECONDS:
+                    print(f"   still working: {start + position}/{len(todo)} (last: {label})", flush=True)
+                    last_print = time.time()
             if kept:
                 features = encode_image_features(model, torch.cat(tensors)).cpu().numpy()
                 for item, row in zip(kept, features):
                     entries.append((*item, row))
             done = min(start + batch_size, len(todo))
-            print(f"   [{done}/{len(todo)}] read")
+            elapsed = max(time.time() - started, 1e-6)
+            rate = done / elapsed
+            line = f"   [{done}/{len(todo)}] {100 * done // len(todo)}% \u00b7 {rate:.1f} maps/s"
+            line += f" \u00b7 about {_duration((len(todo) - done) / rate)} left" if done < len(todo) \
+                else f" \u00b7 finished in {_duration(elapsed)}"
+            print(line, flush=True)
+            last_print = time.time()
             batches_since_save += 1
             if batches_since_save >= SAVE_EVERY_BATCHES:
                 save_index(library, entries, still_failed)

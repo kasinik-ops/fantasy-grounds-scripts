@@ -18,6 +18,9 @@ one-image-at-a-time model(**inputs) forward pass:
     read, a big JPEG decoded at reduced size means the same thing to the model as a
     full decode, an absurdly large image is still refused, and an unreadable file is
     retried once the size limit changes
+  - indexing never looks hung: it says it is loading the model, prints percent, speed
+    and time left after every batch, announces very large maps, and speaks up if a
+    map takes long
 
 It uses the real CLIP model from the local cache (it never goes online), so run it
 the same way as the safety tests -- inside the project's venv, after the classifier
@@ -238,6 +241,34 @@ def test_huge_maps(m, model, processor, tmp):
         f.Image.MAX_IMAGE_PIXELS = real_limit
 
 
+def test_indexing_shows_progress(m, model, processor, tmp):
+    print("\n[progress] indexing says what it is doing, so it never looks hung")
+    import re
+    sys.modules.pop("fgu_find_maps", None)
+    f = importlib.import_module("fgu_find_maps")
+    lib = os.path.join(tmp, "progress")
+    os.makedirs(lib)
+    for i in range(5):
+        Image.fromarray(synthetic_images()["rooms"]).resize((160 + i, 120)).save(os.path.join(lib, f"m{i}.png"))
+
+    saved = f.HEARTBEAT_SECONDS, f.HUGE_IMAGE_PIXELS
+    f.HEARTBEAT_SECONDS, f.HUGE_IMAGE_PIXELS = 0, 10_000     # every map counts as slow and as large
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            f.update_index(lib, batch_size=2)
+    finally:
+        f.HEARTBEAT_SECONDS, f.HUGE_IMAGE_PIXELS = saved
+    text = out.getvalue()
+    lines = text.splitlines()
+    check(any("Loading the AI model" in l for l in lines), "it says it is loading the model before the silent part")
+    check(any(re.search(r"\[2/5\] 40% . [\d.]+ maps/s . about .+ left", l) for l in lines), "after each batch: count, percent, speed and time left")
+    check(any(re.search(r"\[5/5\] 100% . [\d.]+ maps/s . finished in", l) for l in lines), "the last line says it finished and how long it took")
+    check(sum("large map (" in l for l in lines) == 5, "every very large map is announced before it is read")
+    check(any("still working: " in l for l in lines), "a slow stretch produces a 'still working' line")
+    check(f._duration(40) == "40 s" and f._duration(600) == "10 min" and f._duration(4800) == "1 h 20 min", "durations read naturally")
+
+
 def main():
     m = load_module()
     from transformers import CLIPModel, CLIPProcessor
@@ -254,6 +285,7 @@ def main():
         test_unreadable_file_costs_only_itself(m, tmp)
         test_find_maps_agrees_with_the_classifier_and_ranks_sensibly(m, model, processor, tmp)
         test_huge_maps(m, model, processor, tmp)
+        test_indexing_shows_progress(m, model, processor, tmp)
 
     print()
     if failures:
