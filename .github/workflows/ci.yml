@@ -70,6 +70,8 @@ jobs:
         run: python fgu_support_test_safety.py
       - name: Run the classifier correctness tests
         run: python fgu_support_test_classifier.py
+      - name: Run the map-tools window tests
+        run: python fgu_support_test_ui.py
       # The one path every other test skips (they pass --no-update-check): the real
       # check against huggingface.co. It must reach the Hub and must not hang or crash.
       - name: Model update check, against the real Hugging Face
@@ -123,6 +125,17 @@ jobs:
             Write-Host 'FAIL: the map finder tried to set things up again'
             exit 1
           }
+      # run_ui.bat needs both package sets, which the two setups above installed.
+      - name: The map-tools window launcher needs no setup of its own
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $out = powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_windows.ps1 -Tool ui -SetupOnly 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($out -match 'First-time setup') {
+            Write-Host 'FAIL: the map-tools window tried to set things up again'
+            exit 1
+          }
       - name: Restore the CLIP model cache
         id: model-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -146,6 +159,10 @@ jobs:
       - name: Run the classifier correctness tests
         run: |
           venv\Scripts\python.exe fgu_support_test_classifier.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run the map-tools window tests
+        run: |
+          venv\Scripts\python.exe fgu_support_test_ui.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Model update check, against the real Hugging Face
         run: |

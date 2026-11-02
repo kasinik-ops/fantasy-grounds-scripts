@@ -30,6 +30,7 @@ import argparse
 import functools
 import hashlib
 import html
+import json
 import os
 import pathlib
 import re
@@ -382,6 +383,13 @@ def cmd_search(args):
     for place, (score, position) in enumerate(ranked, 1):
         print(f"  {place:>3}. {score:.3f}  {index['paths'][position]}")
 
+    if args.json:
+        # One line the map-tool window (fgu_ui.py) reads; the thumbnail name is what it shows.
+        print("FGU_RESULTS " + json.dumps([
+            {"rel": index["paths"][position], "thumb": index["thumbs"][position], "score": round(score, 4)}
+            for score, position in ranked]))
+    if args.no_page:
+        return 0
     cards = "".join(_card(args.dir, index, position, score) for score, position in ranked)
     slug = re.sub(r"[^a-z0-9]+", "-", args.query.lower()).strip("-")[:40] or "search"
     path = write_page(args.dir, f"search_{slug}",
@@ -428,6 +436,9 @@ def build_parser():
         if name == "search":
             p.add_argument("query", help='what you are looking for, e.g. "tavern interior at night"')
             p.add_argument("--top", type=int, default=24, help="how many results to show (default: 24)")
+            p.add_argument("--no-page", action="store_true", help="don't write the HTML picture page")
+            p.add_argument("--json", action="store_true",
+                           help="also print the results as one machine-readable line (used by fgu_ui.py)")
     return parser
 
 

@@ -327,7 +327,7 @@ DESTRUCTIVE_PATTERNS = [
 
 def test_no_destructive_calls_in_source():
     print("\n[static] no delete/truncate calls in any script")
-    for script in ("fgu_classify_maps.py", "fgu_detect_grid.py", "fgu_find_maps.py"):
+    for script in ("fgu_classify_maps.py", "fgu_detect_grid.py", "fgu_find_maps.py", "fgu_ui.py"):
         source = open(os.path.join(REPO_ROOT, script)).read()
         for pattern in DESTRUCTIVE_PATTERNS:
             check(re.search(pattern, source) is None, f"{script} does not call {pattern}")

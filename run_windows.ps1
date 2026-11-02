@@ -1,7 +1,7 @@
 # Windows launcher for the map tools -- the Windows counterpart of the Mac
-# run_classifier_map.command / run_grid_detector.command / run_find_maps.command files.
-# Start it via run_classifier_map.bat, run_grid_detector.bat or run_find_maps.bat
-# (double-click), which pass -Tool.
+# run_classifier_map.command / run_grid_detector.command / run_find_maps.command /
+# run_ui.command files. Start it via run_classifier_map.bat, run_grid_detector.bat,
+# run_find_maps.bat or run_ui.bat (double-click), which pass -Tool.
 #
 # Windows has neither Python nor bash, so this uses only what ships with
 # Windows (PowerShell 5.1 and .NET):
@@ -20,7 +20,7 @@
 
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('classify', 'grid', 'find')]
+    [ValidateSet('classify', 'grid', 'find', 'ui')]
     [string]$Tool,
 
     # Do the first-run setup (uv, Python, packages) and stop: no dialogs, nothing
@@ -55,6 +55,15 @@ $ToolConfig = @{
         Script   = 'fgu_find_maps.py'
         Requirements = 'requirements-classify.txt'
         Stamp    = 'classify'
+    }
+    # The window runs all three tools, so it needs both package sets.
+    ui       = @{
+        Title    = 'RPG Map Tools'
+        Script   = 'fgu_ui.py'
+        Requirements = 'requirements-classify.txt'
+        Stamp    = 'classify'
+        ExtraRequirements = 'requirements-grid.txt'
+        ExtraStamp = 'grid'
     }
 }
 $Cfg = $ToolConfig[$Tool]
@@ -296,8 +305,23 @@ try {
 
     if ($SetupOnly) {
         Ensure-Environment $Cfg.Stamp $Cfg.Requirements
+        if ($Cfg.ExtraStamp) { Ensure-Environment $Cfg.ExtraStamp $Cfg.ExtraRequirements }
         Write-Host 'Setup complete.'
         exit 0
+    }
+
+    # The map-tools window has no dialogs of its own here: set up, start it, and it
+    # opens in the browser. Closing this console window stops it.
+    if ($Tool -eq 'ui') {
+        Ensure-Environment $Cfg.Stamp $Cfg.Requirements
+        Ensure-Environment $Cfg.ExtraStamp $Cfg.ExtraRequirements
+        Write-Host ''
+        Write-Host 'Starting the map tools. Your web browser will open; close this window to stop them.'
+        & $VenvPython $scriptPath
+        $code = $LASTEXITCODE
+        Write-Host ''
+        Write-Host 'The map tools have stopped.'
+        exit $code
     }
 
     # 1. Explain what this does before touching anything, with a way to read more.

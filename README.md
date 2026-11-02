@@ -35,6 +35,26 @@ The Issue: Corrupted `.conf` files in the Library folder can prevent the updater
 The Issue: Security updates or interrupted downloads can strip the "executable" bit from the app, making it unlaunchable. The Fix: A scripted reinstall via the official `.pkg` ensures all file permissions are set correctly by the macOS installer.
 
 
+**fgu_ui.py** (the map tools window)
+
+A basic window for the three map tools below, the same on Mac OS X and Windows. Double-click `run_ui.command` (Mac) or `run_ui.bat` (Windows). The first run sets up Python and the packages if they aren't there yet, then your web browser opens on a page served from your own computer. Closing the terminal window it started in stops it. (From the command line: `python fgu_ui.py`, optionally with `--library "/path/to/maps"` to start on a folder.)
+
+Type the full path of your maps folder at the top (it remembers the last one) and press **Use this folder**. The line under it shows counts only: how many maps are indexed, whether the AI model is downloaded, and how many maps sit directly in that folder. Then:
+
+- **Find**: describe a map and see the best matches as thumbnails. Choose how many (12, 24, 48 or 100). **Open map** opens the real file in your computer's normal viewer.
+- **Browse**: pick a folder from the list (names and counts) and page through it, 48 maps at a time.
+- **Sort**: the classifier. **Preview** moves nothing and writes a CSV report into the folder. **Sort the maps** moves them into category folders inside that folder, and only if you tick the confirmation box; it always saves an undo file. **Undo** puts a previous sort back, again only with the box ticked. Like the classifier itself, this looks only at maps directly inside the folder, not its sub-folders.
+- **Grids**: the grid detector, which looks at the folder and its sub-folders. Maps that already have an `.xml` are skipped unless you tick both boxes to replace them.
+- **Setup**: download the AI model (the one button that goes online, and only when you press it) and build or update the index.
+
+Whatever you start runs the existing script with the same flags you would type, and its output appears live in the log at the bottom, with a Stop button. One thing runs at a time. Because each button just runs the existing script, all of that script's safety rules apply unchanged (nothing is overwritten; moves are never silent). The window itself writes no files.
+
+It deliberately never shows the whole library at once. Browsing is 48 maps per page, a search shows at most 100, the folder list is capped at 500 names (with a count of any more), the status line shows counts rather than lists, and the log keeps the last 3,000 lines. Only maps that are in the index can be browsed, found or opened, so the first thing to do with a new library is **Setup, then Build / update the index**. That first build reads every map once and can take a long time on a big library, but you can leave it running, and a re-run carries on where it stopped.
+
+Who can use it: only your own computer. It listens on `127.0.0.1` and ignores requests addressed any other way, and it needs the random one-time address it prints (the browser keeps it in a cookie), so other web pages you have open can't drive it. There is no password because nothing is reachable from outside your machine.
+
+Limits: you type or paste the folder path (there is no folder-picker button), the page needs a normal web browser, and it has not been tried on screens smaller than a laptop.
+
 **fgu_classify_maps.py**
 
 This uses classifies RPG battlemaps into kinds to make grabbing the right map before a session easier. It runs on Mac OS X and on Windows (see **Running on Windows** below).
@@ -164,7 +184,7 @@ Unlike `fgu_classify_maps.py`, this scans recursively (including category subfol
 
 **Running on Windows**
 
-Windows has neither Python nor bash, so there are Windows launchers that set everything up for you: double-click `run_classifier_map.bat` (sorts maps into categories), `run_grid_detector.bat` (grid detection) or `run_find_maps.bat` (find maps by description). They show the same dialogs as the Mac `.command` launchers. Both just start `run_windows.ps1`, which is where the real work is.
+Windows has neither Python nor bash, so there are Windows launchers that set everything up for you: double-click `run_ui.bat` (a window for all of the tools below), `run_classifier_map.bat` (sorts maps into categories), `run_grid_detector.bat` (grid detection) or `run_find_maps.bat` (find maps by description). They show the same dialogs as the Mac `.command` launchers. Both just start `run_windows.ps1`, which is where the real work is.
 
 The first run needs an internet connection and takes a few minutes. It downloads [uv](https://github.com/astral-sh/uv) (a pinned version, checked against a SHA-256 hash in `run_windows.ps1` before it is ever run) and uses it to fetch a private copy of Python 3.12 and the packages listed in `requirements-classify.txt` or `requirements-grid.txt`. Everything goes into the `windows_tools` and `venv` folders next to the scripts: nothing is installed system-wide, no admin rights are needed, and deleting those two folders removes it all. Keep the folder path short (for example `C:\fgu`): some of the packages have very long file names, and a deep path can push them over Windows' 260-character limit.
 
@@ -239,10 +259,19 @@ source venv/bin/activate
 python3 fgu_support_test_classifier.py
 ```
 
+**fgu_support_test_ui.py**
+
+Tests for the map tools window. It checks who can talk to it (the one-time address, this machine only, same-origin requests only); that it can never put a whole library on screen, which it proves against an index of 5,000 maps (48 per page, 100 search results, 500 folder names, a 3,000-line log); that it only serves the index's own thumbnails and only opens maps the index lists; that each button starts exactly the right command and that sorting, undoing and replacing grid files need the confirmation; that it writes nothing itself; and that Index, Search, Sort preview, Sort and Undo work end to end on a small real library (undo restores every map byte for byte). It uses the real CLIP model from the local cache and never goes online. Run from inside the project `venv`:
+
+```
+source venv/bin/activate
+python3 fgu_support_test_ui.py
+```
+
 **fgu_support_check_repo.py**
 
 Quick consistency checks that need nothing installed and take about a second: every script the README mentions exists, each launcher runs a script that exists, the `.command` and `.sh` files are executable, `run_windows.ps1` is pure ASCII, the `.bat` files keep their CRLF line endings, every requirements file that is named exists and lists only bounded version ranges, and every script parses. Run it with `python3 fgu_support_check_repo.py`. It only reads files.
 
 **Continuous integration**
 
-`.github/workflows/ci.yml` runs on every push to any branch (so a branch has a result before you open a pull request, and the checks then show on it): the repo checks above, the safety tests and the classifier correctness tests on macOS and on Windows, and a check of the model-update path against the real Hugging Face (which every other test skips) on both. The Windows job sets itself up with the real launcher (`run_windows.ps1 -SetupOnly`), so it also exercises the first-run download, hash check and install, and fails if a second run does any setup again. The CLIP model is cached between runs. CI can't click through the Windows dialogs, so those still need a human.
+`.github/workflows/ci.yml` runs on every push to any branch (so a branch has a result before you open a pull request, and the checks then show on it): the repo checks above, the safety tests, the classifier correctness tests and the map-tools window tests on macOS and on Windows, and a check of the model-update path against the real Hugging Face (which every other test skips) on both. The Windows job sets itself up with the real launcher (`run_windows.ps1 -SetupOnly`), so it also exercises the first-run download, hash check and install, and fails if a second run does any setup again. The CLIP model is cached between runs. CI can't click through the Windows dialogs, so those still need a human.
