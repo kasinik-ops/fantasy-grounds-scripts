@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fgu_mapload.py — Fantasy Grounds Unity map load analyzer.
+fgu_support_maptest.py — Fantasy Grounds Unity map load analyzer.
 
 Statically scans a campaign for the three things that drive per-client
 render load on maps with dynamic lighting / line-of-sight:
