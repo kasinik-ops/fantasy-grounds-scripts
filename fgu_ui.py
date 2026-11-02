@@ -190,7 +190,7 @@ UPDATE_MODEL_CODE = (
     f"n = '{MODEL_ID}'\n"
     "print('Updating the AI model cache (the first time this downloads about 600 MB; needs internet)...', flush=True)\n"
     "CLIPModel.from_pretrained(n)\n"
-    "CLIPProcessor.from_pretrained(n)\n"
+    "CLIPProcessor.from_pretrained(n, use_fast=False)\n"
     "print('The AI model cache is up to date.')\n"
 )
 

@@ -33,6 +33,7 @@ import functools
 import hashlib
 import html
 import json
+import math
 import os
 import pathlib
 import re
@@ -66,6 +67,7 @@ SAVE_EVERY_BATCHES = 10               # an interrupted run keeps what it has fin
 SHEET_PAGE_SIZE = 96                  # maps per picture page; a library is split across many pages
 MAX_SEARCH_RESULTS = 500              # the most a search will put on one page
 HEARTBEAT_SECONDS = 5                 # while reading, never stay silent longer than this between maps
+ANNOUNCE_LARGE_PIXELS = 200_000_000   # only maps this big are announced before being read (the biggest take a few seconds)
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 
@@ -97,13 +99,45 @@ def encode_image_features(model, pixel_values):
     return features / features.norm(dim=-1, keepdim=True)
 
 
+# --- IMAGE PREPARATION ---
+# Preparing an image for the model (resizing and normalising it) takes more time per
+# map than decoding the file or running the model. transformers' "fast" image processor
+# does it about 3x quicker with the same results (embeddings agree to a cosine of
+# 0.99998), but it needs torchvision, so it is used when it works and the standard
+# processor is used when it doesn't.
+
+SHRINK_TARGET_PIXELS = 4_000_000   # a huge map is box-shrunk to about this many pixels first
+
+
+def load_processor(local_files_only=True):
+    """The CLIP processor, with the fast image processor if torchvision allows it, else
+    the standard one. Never fails just because the fast one isn't available."""
+    from transformers import CLIPProcessor
+    try:
+        return CLIPProcessor.from_pretrained(MODEL_ID, local_files_only=local_files_only, use_fast=True)
+    except Exception as e:
+        if not isinstance(e, (ImportError, OSError)):
+            print(f"(Fast image processing isn't available here ({e.__class__.__name__}); using the standard one.)")
+        return CLIPProcessor.from_pretrained(MODEL_ID, local_files_only=local_files_only, use_fast=False)
+
+
+def shrink_if_huge(image):
+    """A map over HUGE_IMAGE_PIXELS is box-shrunk to a few megapixels before the model's own
+    resize to 224 px. The result is the same to the model, but it keeps the processor from
+    turning a 300-megapixel map into gigabytes of floating-point numbers."""
+    pixels = image.width * image.height
+    if pixels <= HUGE_IMAGE_PIXELS:
+        return image
+    return image.reduce(math.isqrt(pixels // SHRINK_TARGET_PIXELS) + 1)
+
+
 @functools.lru_cache(maxsize=1)
 def load_model():
     """The cached CLIP model, never touching the network. None if it isn't cached."""
-    from transformers import CLIPModel, CLIPProcessor
+    from transformers import CLIPModel
     try:
         model = CLIPModel.from_pretrained(MODEL_ID, local_files_only=True).to(DEVICE)
-        processor = CLIPProcessor.from_pretrained(MODEL_ID, local_files_only=True)
+        processor = load_processor(local_files_only=True)
     except Exception as e:
         print(f"❌ The CLIP model isn't downloaded yet ({e}).\n"
               f"   Run the classifier once, with internet, to download it; this tool never goes online.")
@@ -232,11 +266,12 @@ def read_image(library, rel, thumb_name, processor, on_large=None):
     before a very large map is decoded, which can take a while."""
     full = os.path.join(library, *rel.split("/"))
     with Image.open(full) as opened:
-        if opened.width * opened.height > HUGE_IMAGE_PIXELS:
-            if on_large:
-                on_large(opened.width * opened.height / 1e6)
+        pixels = opened.width * opened.height
+        if pixels > ANNOUNCE_LARGE_PIXELS and on_large:
+            on_large(pixels / 1e6)
+        if pixels > HUGE_IMAGE_PIXELS:
             opened.draft("RGB", (1024, 1024))   # only JPEG can; for other formats this does nothing
-        image = opened.convert("RGB")
+        image = shrink_if_huge(opened.convert("RGB"))
     pixels = processor(images=image, return_tensors="pt")["pixel_values"]
     thumb_path = os.path.join(index_dir(library), "thumbs", thumb_name)
     if not os.path.exists(thumb_path):

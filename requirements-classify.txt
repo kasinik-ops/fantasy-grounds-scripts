@@ -8,5 +8,8 @@
 # on the machine. To move a bound: change it here, then let CI run on the push.
 torch>=2.8,<3
 transformers>=4.57,<6
+# torchvision lets transformers use its fast image processor (about 3x quicker at preparing
+# images). It is optional at run time: without it the scripts fall back to the standard one.
+torchvision>=0.23,<1
 pillow>=11,<13
 pillow-heif>=1.1,<2

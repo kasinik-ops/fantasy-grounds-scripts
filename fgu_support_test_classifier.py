@@ -18,6 +18,9 @@ one-image-at-a-time model(**inputs) forward pass:
     read, a big JPEG decoded at reduced size means the same thing to the model as a
     full decode, an absurdly large image is still refused, and an unreadable file is
     retried once the size limit changes
+  - the fast image processor (needs torchvision) is used when it works and the standard
+    one when it doesn't, gives the same embeddings, and a huge map is shrunk before it
+    reaches the processor so it can't use gigabytes of memory
   - indexing never looks hung: it says it is loading the model, prints percent, speed
     and time left after every batch, announces very large maps, and speaks up if a
     map takes long
@@ -241,6 +244,69 @@ def test_huge_maps(m, model, processor, tmp):
         f.Image.MAX_IMAGE_PIXELS = real_limit
 
 
+def test_fast_image_processor(m, model, processor, tmp):
+    print("\n[fast processor] used when it works, standard one otherwise, same embeddings")
+    import importlib.util
+    import transformers
+    sys.modules.pop("fgu_find_maps", None)
+    f = importlib.import_module("fgu_find_maps")
+    have_torchvision = importlib.util.find_spec("torchvision") is not None
+    name = type(processor.image_processor).__name__
+    print(f"  info - torchvision installed: {have_torchvision}; the classifier is using {name}")
+    check(name.endswith("Fast") == have_torchvision,
+          "the fast image processor is used exactly when torchvision is installed")
+    check(type(f.load_model()[1].image_processor).__name__ == name, "fgu_find_maps picks the same processor")
+
+    class Stub:
+        calls = []
+        failure = ImportError("no torchvision")
+
+        @classmethod
+        def from_pretrained(cls, model_id, **kwargs):
+            cls.calls.append(kwargs)
+            if kwargs.get("use_fast") is True:
+                raise cls.failure
+            return "standard processor"
+
+    real_module_class, real_transformers_class = m.CLIPProcessor, transformers.CLIPProcessor
+    m.CLIPProcessor = transformers.CLIPProcessor = Stub
+    try:
+        for failure in (ImportError("no torchvision"), RuntimeError("torchvision is broken")):
+            Stub.failure, Stub.calls = failure, []
+            noise = io.StringIO()
+            with contextlib.redirect_stdout(noise):
+                got = (m.load_processor("x", True), f.load_processor(True))
+            check(got == ("standard processor", "standard processor") and [c["use_fast"] for c in Stub.calls] == [True, False, True, False],
+                  f"when the fast one fails with {type(failure).__name__}, both scripts fall back to the standard one")
+            check(("isn't available" in noise.getvalue()) == isinstance(failure, RuntimeError),
+                  "...and say so only when the failure is unexpected (not for a plain missing torchvision)")
+    finally:
+        m.CLIPProcessor, transformers.CLIPProcessor = real_module_class, real_transformers_class
+
+    if have_torchvision:
+        standard = transformers.CLIPProcessor.from_pretrained(m.MODEL_ID, local_files_only=True, use_fast=False)
+        check(not type(standard.image_processor).__name__.endswith("Fast"), "the standard processor really is the standard one")
+        cosines = []
+        for name_, array in synthetic_images().items():
+            path = os.path.join(tmp, f"fp_{name_}.png")
+            Image.fromarray(array).save(path)
+            fast_f = m.encode_image_features(model, m.preprocess_image(processor, path))
+            slow_f = m.encode_image_features(model, m.preprocess_image(standard, path))
+            cosines.append(float((fast_f * slow_f).sum()))
+        check(min(cosines) > 0.999, f"fast and standard processors give the same embeddings (worst cosine {min(cosines):.5f})")
+    else:
+        print("  skip - the fast-vs-standard comparison needs torchvision, which isn't installed here")
+
+    small = Image.new("RGB", (400, 300))
+    check(m.shrink_if_huge(small) is small and f.shrink_if_huge(small) is small, "an ordinary map is left as it is")
+    huge = Image.new("RGB", (9000, 8000))                     # 72 megapixels, over the 60 million line
+    for module in (m, f):
+        shrunk = module.shrink_if_huge(huge)
+        ratio = (shrunk.width / shrunk.height) / (huge.width / huge.height)
+        check(shrunk.width * shrunk.height <= 6_000_000 and abs(ratio - 1) < 0.01,
+              f"{module.__name__}: a 72-megapixel map is shrunk to {shrunk.width}x{shrunk.height}, same shape")
+
+
 def test_indexing_shows_progress(m, model, processor, tmp):
     print("\n[progress] indexing says what it is doing, so it never looks hung")
     import re
@@ -251,20 +317,33 @@ def test_indexing_shows_progress(m, model, processor, tmp):
     for i in range(5):
         Image.fromarray(synthetic_images()["rooms"]).resize((160 + i, 120)).save(os.path.join(lib, f"m{i}.png"))
 
-    saved = f.HEARTBEAT_SECONDS, f.HUGE_IMAGE_PIXELS
-    f.HEARTBEAT_SECONDS, f.HUGE_IMAGE_PIXELS = 0, 10_000     # every map counts as slow and as large
+    saved = f.HEARTBEAT_SECONDS, f.HUGE_IMAGE_PIXELS, f.ANNOUNCE_LARGE_PIXELS
+    f.HEARTBEAT_SECONDS, f.HUGE_IMAGE_PIXELS, f.ANNOUNCE_LARGE_PIXELS = 0, 10_000, 10_000   # every map counts as slow and as large
     out = io.StringIO()
     try:
         with contextlib.redirect_stdout(out):
             f.update_index(lib, batch_size=2)
     finally:
-        f.HEARTBEAT_SECONDS, f.HUGE_IMAGE_PIXELS = saved
+        f.HEARTBEAT_SECONDS, f.HUGE_IMAGE_PIXELS, f.ANNOUNCE_LARGE_PIXELS = saved
     text = out.getvalue()
     lines = text.splitlines()
     check(any("Loading the AI model" in l for l in lines), "it says it is loading the model before the silent part")
     check(any(re.search(r"\[2/5\] 40% . [\d.]+ maps/s . about .+ left", l) for l in lines), "after each batch: count, percent, speed and time left")
     check(any(re.search(r"\[5/5\] 100% . [\d.]+ maps/s . finished in", l) for l in lines), "the last line says it finished and how long it took")
     check(sum("large map (" in l for l in lines) == 5, "every very large map is announced before it is read")
+    fresh = os.path.join(tmp, "progress_quiet")                                   # maps the model has not seen yet
+    os.makedirs(fresh)
+    for i in range(3):
+        Image.fromarray(synthetic_images()["rooms"]).resize((170 + i, 120)).save(os.path.join(fresh, f"q{i}.png"))
+    f.HUGE_IMAGE_PIXELS = 10_000                                                  # "big" for shrinking, but under the announce line
+    quiet = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(quiet):
+            f.update_index(fresh, batch_size=2)
+    finally:
+        f.HUGE_IMAGE_PIXELS = saved[1]
+    check("3 to read" in quiet.getvalue() and "large map (" not in quiet.getvalue(),
+          "a big map that is not huge (under 200 megapixels) is read without an announcement")
     check(any("still working: " in l for l in lines), "a slow stretch produces a 'still working' line")
     check(f._duration(40) == "40 s" and f._duration(600) == "10 min" and f._duration(4800) == "1 h 20 min", "durations read naturally")
 
@@ -274,7 +353,7 @@ def main():
     from transformers import CLIPModel, CLIPProcessor
     try:
         model = CLIPModel.from_pretrained(m.MODEL_ID, local_files_only=True).to(m.DEVICE)
-        processor = CLIPProcessor.from_pretrained(m.MODEL_ID, local_files_only=True)
+        processor = m.load_processor(m.MODEL_ID, True)
     except Exception as e:
         print(f"❌ The CLIP model isn't in the local cache ({e}).\n"
               f"   Run fgu_classify_maps.py once, with internet, to download it.")
@@ -285,6 +364,7 @@ def main():
         test_unreadable_file_costs_only_itself(m, tmp)
         test_find_maps_agrees_with_the_classifier_and_ranks_sensibly(m, model, processor, tmp)
         test_huge_maps(m, model, processor, tmp)
+        test_fast_image_processor(m, model, processor, tmp)
         test_indexing_shows_progress(m, model, processor, tmp)
 
     print()
