@@ -81,16 +81,28 @@ It only scans files sitting directly in the selected folder, not subdirectories 
 
 **fgu_find_maps.py**
 
-Finds maps by describing them ("tavern interior at night", "cave with an underground river"), and shows a whole library as a page of pictures. It looks at the images themselves, not their file names or folders, so it also finds maps that sit in `unclassified`, `map scenes` or a folder you named yourself. It is the same CLIP model the classifier uses. Python only; there is no dialog launcher for it yet.
+Finds maps by describing them ("tavern interior at night", "cave with an underground river"), and shows a whole library as a page of pictures. It looks at the images themselves, not their file names or folders, so it also finds maps that sit in `unclassified`, `map scenes` or a folder you named yourself. It is the same CLIP model the classifier uses. It runs on both Mac OS X and Windows, with a double-click launcher on each (below) or from the command line.
 
 *Before you start*
 
-1. Run the classifier launcher once (`run_classifier_map.command` on a Mac, `run_classifier_map.bat` on Windows). That creates the `venv` folder with everything installed and downloads the CLIP model. This tool never goes online, so it can't download the model itself; if the model is missing it says so and stops.
-2. Open a terminal in this folder and use the Python in that `venv`:
-   - Mac: `source venv/bin/activate`, then run the commands below as written.
-   - Windows: put `venv\Scripts\python.exe` where the commands below say `python`.
+Run the classifier launcher once (`run_classifier_map.command` on a Mac, `run_classifier_map.bat` on Windows). That downloads the CLIP model, which this tool needs. This tool never goes online, so it can't download the model itself; if the model is missing it says so and stops. If you don't want to sort anything yet, leave the destination blank in the classifier's dialog: it then only classifies, and moves nothing, but it still downloads the model.
 
-*Using it*
+*The easy way: the launcher*
+
+Double-click `run_find_maps.command` (Mac) or `run_find_maps.bat` (Windows). The first run sets up Python and the packages if they aren't there yet, exactly as the other launchers do (on Windows it shares the classifier's setup, so there is nothing more to install after running the classifier). Then:
+
+1. Read the short explanation and click Continue.
+2. Pick your maps folder.
+3. Choose **Search**, type what you are looking for (for example `tavern interior at night`), and click OK. Or choose **Whole Library** to get a page of the entire library grouped by folder.
+4. The first time, it reads every map once; you'll see its progress in the terminal window. When it finishes, the picture page opens in your web browser. Click a thumbnail to open the real map.
+
+*The command line*
+
+For more control (such as `--top`), open a terminal in this folder and use the Python in the `venv`:
+- Mac: `source venv/bin/activate`, then run the commands below as written.
+- Windows: put `venv\Scripts\python.exe` where the commands below say `python`.
+
+*Using it from the command line*
 
 1. **Search.** Point it at your map library (the top folder; sub-folders are included, so it works on a library the classifier has already sorted) and say what you want:
 
@@ -152,7 +164,7 @@ Unlike `fgu_classify_maps.py`, this scans recursively (including category subfol
 
 **Running on Windows**
 
-Windows has neither Python nor bash, so there are Windows launchers that set everything up for you: double-click `run_classifier_map.bat` (sorts maps into categories) or `run_grid_detector.bat` (grid detection). They show the same dialogs as the Mac `.command` launchers. Both just start `run_windows.ps1`, which is where the real work is.
+Windows has neither Python nor bash, so there are Windows launchers that set everything up for you: double-click `run_classifier_map.bat` (sorts maps into categories), `run_grid_detector.bat` (grid detection) or `run_find_maps.bat` (find maps by description). They show the same dialogs as the Mac `.command` launchers. Both just start `run_windows.ps1`, which is where the real work is.
 
 The first run needs an internet connection and takes a few minutes. It downloads [uv](https://github.com/astral-sh/uv) (a pinned version, checked against a SHA-256 hash in `run_windows.ps1` before it is ever run) and uses it to fetch a private copy of Python 3.12 and the packages listed in `requirements-classify.txt` or `requirements-grid.txt`. Everything goes into the `windows_tools` and `venv` folders next to the scripts: nothing is installed system-wide, no admin rights are needed, and deleting those two folders removes it all. Keep the folder path short (for example `C:\fgu`): some of the packages have very long file names, and a deep path can push them over Windows' 260-character limit.
 

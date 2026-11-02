@@ -1,6 +1,7 @@
 # Windows launcher for the map tools -- the Windows counterpart of the Mac
-# run_classifier_map.command / run_grid_detector.command files. Start it via
-# run_classifier_map.bat or run_grid_detector.bat (double-click), which pass -Tool.
+# run_classifier_map.command / run_grid_detector.command / run_find_maps.command files.
+# Start it via run_classifier_map.bat, run_grid_detector.bat or run_find_maps.bat
+# (double-click), which pass -Tool.
 #
 # Windows has neither Python nor bash, so this uses only what ships with
 # Windows (PowerShell 5.1 and .NET):
@@ -19,7 +20,7 @@
 
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('classify', 'grid')]
+    [ValidateSet('classify', 'grid', 'find')]
     [string]$Tool,
 
     # Do the first-run setup (uv, Python, packages) and stop: no dialogs, nothing
@@ -39,11 +40,21 @@ $ToolConfig = @{
         Title    = 'RPG Map Categorizer'
         Script   = 'fgu_classify_maps.py'
         Requirements = 'requirements-classify.txt'
+        Stamp    = 'classify'
     }
     grid     = @{
         Title    = 'RPG Map Grid Detector'
         Script   = 'fgu_detect_grid.py'
         Requirements = 'requirements-grid.txt'
+        Stamp    = 'grid'
+    }
+    # Needs the same packages as the classifier, so it shares its stamp: if the
+    # classifier is already set up, this does no setup at all.
+    find     = @{
+        Title    = 'RPG Map Finder'
+        Script   = 'fgu_find_maps.py'
+        Requirements = 'requirements-classify.txt'
+        Stamp    = 'classify'
     }
 }
 $Cfg = $ToolConfig[$Tool]
@@ -263,6 +274,16 @@ Tip: the Images panel also has a link (bottom right) that opens the images folde
 See the README for full details.
 '@
 
+$FindIntro = @'
+This tool finds battle maps by description (for example "tavern interior at night"), or shows your whole map library as a page of pictures you can click through. It looks at the pictures themselves, so it also finds maps hiding in folders like "unclassified".
+
+It only READS your maps. It keeps a small index and thumbnails in a hidden folder called .fgu_map_index inside your maps folder, which is safe to delete at any time. The first time, it reads every map once, which can take a while for a big library; after that only new maps are read.
+
+It needs the AI model the classifier downloads, and never goes online itself. If you have not run the map classifier yet, run run_classifier_map.bat once first.
+
+The results open as a page in your web browser. See the README for full details.
+'@
+
 # --- Main flow -----------------------------------------------------------------------
 
 try {
@@ -274,14 +295,15 @@ try {
     }
 
     if ($SetupOnly) {
-        Ensure-Environment $Tool $Cfg.Requirements
+        Ensure-Environment $Cfg.Stamp $Cfg.Requirements
         Write-Host 'Setup complete.'
         exit 0
     }
 
     # 1. Explain what this does before touching anything, with a way to read more.
-    if ($Tool -eq 'classify') { $introText = $ClassifyIntro; $introHeight = 200 }
-    else                      { $introText = $GridIntro;     $introHeight = 280 }
+    if ($Tool -eq 'classify')  { $introText = $ClassifyIntro; $introHeight = 200 }
+    elseif ($Tool -eq 'find')  { $introText = $FindIntro;     $introHeight = 250 }
+    else                       { $introText = $GridIntro;     $introHeight = 280 }
     while ($true) {
         $r = Show-Dialog -Title $Cfg.Title -Message $introText -Buttons 'Cancel', 'Open README', 'Continue' `
             -DefaultButton 'Continue' -MessageHeight $introHeight
@@ -301,7 +323,23 @@ try {
     $PyArgs = @('--dir', (Clean-Path $folder))
 
     # 3. Tool-specific choices.
-    if ($Tool -eq 'classify') {
+    if ($Tool -eq 'find') {
+        # Search, or a picture page of everything. The command goes first, then --dir.
+        $r = Show-Dialog -Title $Cfg.Title -Buttons 'Cancel', 'Whole Library', 'Search' -DefaultButton 'Search' `
+            -Message 'Search for maps matching a description, or make a picture page of the whole library?' -MessageHeight 30
+        if ($r.Button -eq 'Search') {
+            $r = Show-Dialog -Title $Cfg.Title -AskText `
+                -Message 'Describe the map you are looking for, for example: tavern interior at night' `
+                -Buttons 'Cancel', 'OK' -DefaultButton 'OK' -MessageHeight 40
+            # Double quotes would be mangled on the way to Python by PowerShell 5.1.
+            $query = ($r.Text -replace '"', "'").Trim()
+            if ($r.Button -ne 'OK' -or -not $query) { Write-Host 'Canceled.'; exit 0 }
+            $PyArgs = @('search') + $PyArgs + @($query, '--open')
+        }
+        elseif ($r.Button -eq 'Whole Library') { $PyArgs = @('sheet') + $PyArgs + @('--open') }
+        else { Write-Host 'Canceled.'; exit 0 }
+    }
+    elseif ($Tool -eq 'classify') {
         # Only asks WHERE; the Python script itself warns how many files are
         # affected and asks for confirmation before moving anything.
         $r = Show-Dialog -Title $Cfg.Title -AskText -TextDefault (Clean-Path $folder) `
@@ -320,23 +358,26 @@ try {
     }
 
     # 4. Advanced parameters (optional). Blank answers keep the script's default.
-    $r = Show-Dialog -Title $Cfg.Title -Buttons 'Cancel', 'Use Defaults', 'Customize' -DefaultButton 'Use Defaults' `
-        -Message 'Use default detection settings, or customize advanced parameters?' -MessageHeight 30
-    if ($r.Button -eq 'Customize') {
-        if ($Tool -eq 'classify') {
-            $PyArgs += @(Ask-Option '--unclassified-threshold' 'Minimum CLIP confidence (%) before tagging an image "unclassified" instead of forcing the closest category:' '25')
+    #    (The finder has none.)
+    if ($Tool -ne 'find') {
+        $r = Show-Dialog -Title $Cfg.Title -Buttons 'Cancel', 'Use Defaults', 'Customize' -DefaultButton 'Use Defaults' `
+            -Message 'Use default detection settings, or customize advanced parameters?' -MessageHeight 30
+        if ($r.Button -eq 'Customize') {
+            if ($Tool -eq 'classify') {
+                $PyArgs += @(Ask-Option '--unclassified-threshold' 'Minimum CLIP confidence (%) before tagging an image "unclassified" instead of forcing the closest category:' '25')
+            }
+            else {
+                $PyArgs += @(Ask-Option '--grid-min-px' 'Minimum grid square size to consider, in pixels:' '20')
+                $PyArgs += @(Ask-Option '--grid-max-fraction' 'Maximum grid square size, as a fraction of the shorter image side:' '0.25')
+                $PyArgs += @(Ask-Option '--grid-min-confidence' 'Minimum grid-detection confidence (0-1) before reporting "no grid detected":' '0.15')
+                $PyArgs += @(Ask-Option '--grid-min-line-coverage' 'Minimum fraction (0-1) of the image a candidate grid line must actually span to count as real (rejects photo textures like railings or decking):' '0.5')
+            }
         }
-        else {
-            $PyArgs += @(Ask-Option '--grid-min-px' 'Minimum grid square size to consider, in pixels:' '20')
-            $PyArgs += @(Ask-Option '--grid-max-fraction' 'Maximum grid square size, as a fraction of the shorter image side:' '0.25')
-            $PyArgs += @(Ask-Option '--grid-min-confidence' 'Minimum grid-detection confidence (0-1) before reporting "no grid detected":' '0.15')
-            $PyArgs += @(Ask-Option '--grid-min-line-coverage' 'Minimum fraction (0-1) of the image a candidate grid line must actually span to count as real (rejects photo textures like railings or decking):' '0.5')
-        }
+        elseif ($r.Button -ne 'Use Defaults') { Write-Host 'Canceled.'; exit 0 }
     }
-    elseif ($r.Button -ne 'Use Defaults') { Write-Host 'Canceled.'; exit 0 }
 
     # 5. Make sure Python and the packages exist (a no-op after the first run).
-    Ensure-Environment $Tool $Cfg.Requirements
+    Ensure-Environment $Cfg.Stamp $Cfg.Requirements
 
     # 6. Run the script. Its own prompts (move confirmation, model download) are
     #    answered right here in this console window.

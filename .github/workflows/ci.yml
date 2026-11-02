@@ -111,6 +111,18 @@ jobs:
             Write-Host 'FAIL: the second run tried to set things up again'
             exit 1
           }
+      # run_find_maps.bat starts the map finder through the same launcher. It needs the
+      # classifier's packages, so after the classifier setup it must have nothing to do.
+      - name: The map finder launcher shares the classifier's setup
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $out = powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_windows.ps1 -Tool find -SetupOnly 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($out -match 'First-time setup') {
+            Write-Host 'FAIL: the map finder tried to set things up again'
+            exit 1
+          }
       - name: Restore the CLIP model cache
         id: model-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
