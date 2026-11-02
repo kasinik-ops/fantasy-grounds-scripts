@@ -341,7 +341,7 @@ def test_jobs(server):
     client.sign_in()
     py = sys.executable
     check(server.ctx.start_job("long", [py, "-c", "import time; time.sleep(60)"]), "a job starts")
-    status, reply = client.json("POST", "/api/run", {"action": "download_model", "options": {}})
+    status, reply = client.json("POST", "/api/run", {"action": "update_model", "options": {}})
     check(status == 409, f"a second job is refused while one runs (got {status})")
     status, job = client.json("GET", "/api/status")
     check(job["job"]["status"] == "running", "the status says a job is running")

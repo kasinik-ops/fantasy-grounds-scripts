@@ -2,15 +2,15 @@
 """
 A basic window for the map tools, the same on Mac and Windows. It starts a small
 web page on your own computer and opens it in your browser; nothing is reachable
-from outside your machine, and nothing goes online (apart from the model download
-button, which you press yourself).
+from outside your machine, and nothing goes online (apart from the Update AI model
+cache button, which you press yourself).
 
     python3 fgu_ui.py [--library "/path/to/maps"] [--no-browser]
 
 From the page you can search the library by description, browse it a page at a
 time, sort maps into category folders (preview first, with an undo), detect grids on
 any folder, check a Fantasy Grounds campaign for maps that are heavy to display, and
-build the index / download the AI model.
+build the index / update the AI model cache.
 
 It is a thin runner: every action starts one of the existing scripts
 (fgu_classify_maps.py, fgu_detect_grid.py, fgu_find_maps.py, fgu_support_maptest.py)
@@ -153,13 +153,13 @@ def open_with_default_app(path):
 # ---------------------------------------------------------------------------
 # Jobs: one existing script at a time, its output streamed into the page
 # ---------------------------------------------------------------------------
-DOWNLOAD_MODEL_CODE = (
+UPDATE_MODEL_CODE = (
     "from transformers import CLIPModel, CLIPProcessor\n"
     f"n = '{MODEL_ID}'\n"
-    "print('Downloading the AI model (a few hundred MB, needs internet)...', flush=True)\n"
+    "print('Updating the AI model cache (the first time this downloads a few hundred MB; needs internet)...', flush=True)\n"
     "CLIPModel.from_pretrained(n)\n"
     "CLIPProcessor.from_pretrained(n)\n"
-    "print('The AI model is ready.')\n"
+    "print('The AI model cache is up to date.')\n"
 )
 
 
@@ -225,8 +225,8 @@ def build_command(action, library, options):
                 raise ValueError("Type the full path of a Fantasy Grounds campaign folder, or leave it blank to look in Fantasy Grounds' own data folder.")
             cmd += ["--campaign", campaign]
         return "Check campaign maps for heavy load", cmd
-    if action == "download_model":
-        return "Download the AI model", [py, "-c", DOWNLOAD_MODEL_CODE]
+    if action == "update_model":
+        return "Update AI model cache", [py, "-c", UPDATE_MODEL_CODE]
     raise ValueError("Unknown action.")
 
 
@@ -543,6 +543,8 @@ input[type=text], select { font:inherit; padding:7px 9px; border:1px solid var(-
 button { font:inherit; padding:7px 14px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); cursor:pointer; }
 button.primary { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
 button:disabled { opacity:.5; cursor:not-allowed; }
+button.stacked { text-align:left; line-height:1.25; }
+button.stacked small { display:block; font-size:12px; color:var(--muted); }
 .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0; }
 #lib { flex:1 1 320px; min-width:0; }
 #status { margin:6px 0 0; font-size:14px; }
@@ -638,7 +640,7 @@ p { margin:6px 0; }
 <div class="panel" id="panel-setup" hidden>
   <h2>AI model</h2>
   <p id="model-state" class="muted"></p>
-  <div class="row"><button id="download">Download the AI model</button><span class="muted">One-off, needs internet. Everything else works offline.</span></div>
+  <div class="row"><button id="update-model" class="stacked">Update AI model cache<small>Requires internet access</small></button><span class="muted">The first time this downloads the model (a few hundred MB); after that it checks for newer files. Everything else works offline.</span></div>
   <h2 style="margin-top:18px">Index</h2>
   <p class="muted">Finding and browsing use an index of your library, kept in a hidden <code>.fgu_map_index</code> folder inside it. The first build reads every map once and can take a long time on a big library; after that only new maps are read. Searching also updates it by itself.</p>
   <div class="row"><button id="index" class="primary">Build / update the index</button></div>
@@ -671,7 +673,7 @@ const q = (params) => new URLSearchParams(params).toString();
 
 function setBusy(value) {
   busy = value;
-  for (const id of ["search", "preview", "sortnow", "undo", "grid", "download", "index", "checkrun"]) $(id).disabled = value;
+  for (const id of ["search", "preview", "sortnow", "undo", "grid", "update-model", "index", "checkrun"]) $(id).disabled = value;
   $("stop").disabled = !value;
 }
 
@@ -686,13 +688,13 @@ function say(text, cls) { const s = $("status"); s.textContent = text; s.classNa
 
 async function refreshStatus() {
   const s = await api("/api/status?" + q({ lib }));
-  $("model-state").textContent = s.model_ready ? "The AI model is downloaded and ready." : "The AI model is not downloaded yet. Searching and sorting need it.";
+  $("model-state").textContent = s.model_ready ? "The AI model is in the cache and ready." : "The AI model is not in the cache yet. Searching and sorting need it: press Update AI model cache below.";
   $("model-state").className = s.model_ready ? "muted" : "warn";
   if (!lib) return;
   if (s.error || !s.library) { say(s.error || "Folder not found.", "bad"); return; }
   const l = s.library, parts = [];
   parts.push(l.indexed === null ? "Not indexed yet (see Setup)" : l.indexed.toLocaleString() + " maps indexed");
-  parts.push("model " + (s.model_ready ? "ready" : "not downloaded (see Setup)"));
+  parts.push("model " + (s.model_ready ? "ready" : "not in the cache (see Setup)"));
   parts.push(l.top_level_images.toLocaleString() + " maps directly in this folder (what Sort looks at)");
   say(parts.join("  \u00b7  "), (l.indexed === null || !s.model_ready) ? "warn" : "muted");
   fillFolderChoices(l.indexed !== null).catch(() => {});
@@ -826,7 +828,7 @@ $("undo").addEventListener("click", () => run("undo", { folder: folderOf("sort-f
 $("grid").addEventListener("click", () => run("grid", { folder: folderOf("grid-folder"), force: $("force").checked, confirm: $("confirm-grid").checked }));
 $("checkrun").addEventListener("click", () => run("check", { campaign: $("check-folder").value.trim(), top: parseInt($("check-top").value, 10) }));
 $("sort-folder").addEventListener("change", () => refreshSortInfo().catch(() => {}));
-$("download").addEventListener("click", () => run("download_model"));
+$("update-model").addEventListener("click", () => run("update_model"));
 $("index").addEventListener("click", () => run("index"));
 $("stop").addEventListener("click", () => api("/api/stop", {}).catch(() => {}));
 
