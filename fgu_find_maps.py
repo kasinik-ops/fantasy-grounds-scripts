@@ -43,6 +43,16 @@ from PIL import Image
 
 pillow_heif.register_heif_opener()
 
+# Pillow refuses any image over twice its MAX_IMAGE_PIXELS (about 179 million
+# pixels by default) as protection against decompression bombs. Real print-size
+# maps are bigger than that -- a 60 x 60 inch map at 300 ppi is 324 million -- so
+# the ceiling is raised on purpose, not removed: nothing over 700 million pixels
+# (about 2 GB once decoded) is opened, and Pillow still warns above 350 million.
+Image.MAX_IMAGE_PIXELS = 350_000_000
+# A JPEG bigger than this is decoded at a reduced size: the model sees 224 px and the
+# thumbnail is 256 px, so nothing is lost, and it is far faster and lighter.
+HUGE_IMAGE_PIXELS = 60_000_000
+
 MODEL_ID = "openai/clip-vit-base-patch32"
 VALID_IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif')
 INDEX_DIRNAME = ".fgu_map_index"
@@ -137,9 +147,11 @@ def load_index(library):
                 "mtimes": [int(m) for m in data["mtimes"]],
                 "thumbs": [str(t) for t in data["thumbs"]],
                 "embeddings": data["embeddings"].astype(np.float32),
+                # A file that failed under a different size ceiling is worth another try.
                 "failed": set(zip((str(p) for p in data["failed_paths"]),
                                   (int(s) for s in data["failed_sizes"]),
-                                  (int(m) for m in data["failed_mtimes"]))),
+                                  (int(m) for m in data["failed_mtimes"])))
+                if "read_limit" in data.files and int(data["read_limit"]) == Image.MAX_IMAGE_PIXELS else set(),
             }
     except Exception:
         return None  # unreadable or from something else -- just build it again
@@ -160,6 +172,7 @@ def save_index(library, entries, failed=()):
             f,
             format=np.array(INDEX_FORMAT),
             model_id=np.array(MODEL_ID),
+            read_limit=np.array(Image.MAX_IMAGE_PIXELS),
             paths=np.array([e[0] for e in entries], dtype=str),
             sizes=np.array([e[1] for e in entries], dtype=np.int64),
             mtimes=np.array([e[2] for e in entries], dtype=np.int64),
@@ -182,14 +195,16 @@ def read_image(library, rel, thumb_name, processor):
     thumbnail is written once, and an existing one is never rewritten."""
     full = os.path.join(library, *rel.split("/"))
     with Image.open(full) as opened:
+        if opened.width * opened.height > HUGE_IMAGE_PIXELS:
+            opened.draft("RGB", (1024, 1024))   # only JPEG can; for other formats this does nothing
         image = opened.convert("RGB")
+    pixels = processor(images=image, return_tensors="pt")["pixel_values"]
     thumb_path = os.path.join(index_dir(library), "thumbs", thumb_name)
     if not os.path.exists(thumb_path):
         os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
-        small = image.copy()
-        small.thumbnail((THUMB_SIZE, THUMB_SIZE))
-        small.save(thumb_path, "JPEG", quality=80)
-    return processor(images=image, return_tensors="pt")["pixel_values"]
+        image.thumbnail((THUMB_SIZE, THUMB_SIZE))   # in place: no second full-size copy of a huge map
+        image.save(thumb_path, "JPEG", quality=80)
+    return pixels
 
 
 def update_index(library, batch_size=16):

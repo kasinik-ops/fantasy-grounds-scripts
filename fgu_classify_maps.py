@@ -19,6 +19,16 @@ from transformers import CLIPModel, CLIPProcessor
 
 pillow_heif.register_heif_opener()  # lets PIL open .heic/.heif (iPhone's default photo format)
 
+# Pillow refuses any image over twice its MAX_IMAGE_PIXELS (about 179 million
+# pixels by default) as protection against decompression bombs. Real print-size
+# maps are bigger than that -- a 60 x 60 inch map at 300 ppi is 324 million -- so
+# the ceiling is raised on purpose, not removed: nothing over 700 million pixels
+# (about 2 GB once decoded) is opened, and Pillow still warns above 350 million.
+Image.MAX_IMAGE_PIXELS = 350_000_000
+# A JPEG bigger than this is decoded at a reduced size (the model only sees 224 px
+# anyway), which is far faster and lighter. Smaller images are decoded in full, as before.
+HUGE_IMAGE_PIXELS = 60_000_000
+
 VALID_IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif')
 
 # --- ARGUMENT PARSER (Receives input from run_classifier_map.command GUI) ---
@@ -313,6 +323,8 @@ def preprocess_image(processor, path):
     the rest of its batch -- only the small tensors are batched. The file is closed
     before this returns (on Windows an open file can't be moved)."""
     with Image.open(path) as opened:
+        if opened.width * opened.height > HUGE_IMAGE_PIXELS:
+            opened.draft("RGB", (1024, 1024))   # only JPEG can; for other formats this does nothing
         image = opened.convert("RGB")
     return processor(images=image, return_tensors="pt")["pixel_values"]
 

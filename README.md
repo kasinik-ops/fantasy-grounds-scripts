@@ -139,6 +139,11 @@ Status: CI tests the setup and the scripts on a real Windows machine on every pu
 `requirements-classify.txt` and `requirements-grid.txt` list the packages the tools need, as version ranges. The Mac launchers, the Windows launcher and CI all install from these same two files, so the versions CI tests are the versions you get. Each lower bound is a version that has been tested; each upper bound stops the next major release from being picked up until it has been tested. An existing Mac `venv` is not upgraded as long as it already satisfies the ranges. (`osxphotos<0.67`, which only the Mac `--album` mode uses, is added by the Mac launchers themselves.) On Windows, editing a range re-runs the install once.
 
 
+**Very large maps**
+
+Pillow, the image library all three tools use, refuses images over about 179 million pixels as protection against "decompression bomb" files. Print-size maps go past that (a 60 x 60 inch map at 300 ppi is 324 million pixels), so the tools raise the limit on purpose: images up to 700 million pixels are opened, and anything larger is still refused and reported by name. The classifier and `fgu_find_maps.py` shrink very large JPEGs while decoding them, so those cost little; a large PNG or WebP has to be decoded in full, which takes memory (about 1 GB for 324 million pixels). The grid detector can't shrink the image, because grid spacing is measured in real pixels, and needs about 3.6 GB at 324 million pixels (measured: 17 seconds). `fgu_find_maps.py` retries a map it couldn't read whenever this limit changes.
+
+
 **Getting a map into Fantasy Grounds**
 
 Neither `fgu_classify_maps.py` nor `fgu_detect_grid.py` puts anything into Fantasy Grounds by itself as library can run into the thousands of files. To move the maps over:

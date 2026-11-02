@@ -14,6 +14,15 @@ from PIL import Image
 
 pillow_heif.register_heif_opener()  # lets PIL open .heic/.heif (iPhone's default photo format)
 
+# Pillow refuses any image over twice its MAX_IMAGE_PIXELS (about 179 million
+# pixels by default) as protection against decompression bombs. Real print-size
+# maps are bigger than that -- a 60 x 60 inch map at 300 ppi is 324 million -- so
+# the ceiling is raised on purpose, not removed: nothing over 700 million pixels
+# is opened, and Pillow still warns above 350 million. Note a map this size needs
+# several GB of memory here (the gradient maps are float32), because the grid
+# spacing is measured in real pixels and the image can't be shrunk first.
+Image.MAX_IMAGE_PIXELS = 350_000_000
+
 VALID_IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif')
 
 # --- ARGUMENT PARSER (Receives input from run_grid_detector.command GUI) ---
@@ -148,8 +157,11 @@ def detect_grid(image_path, min_grid_px=20, max_grid_fraction=0.25, min_confiden
     (railings, decking, tiles) that autocorrelation alone can score as confidently
     as a genuine drawn grid."""
     try:
-        gray = np.array(Image.open(image_path).convert("L"))
-    except Exception:
+        with Image.open(image_path) as opened:
+            gray = np.array(opened.convert("L"))
+    except Exception as e:
+        # Say so: this used to be indistinguishable from "no grid here".
+        print(f"   ⚠️  couldn't read {os.path.basename(image_path)}: {e}")
         return None
     height, width = gray.shape
 

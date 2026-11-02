@@ -14,6 +14,10 @@ one-image-at-a-time model(**inputs) forward pass:
   - a file that can't be read costs only itself, not the rest of its batch
   - fgu_find_maps.py encodes text and images exactly as the classifier does, and a
     search for a colour ranks the image of that colour first
+  - print-size maps (bigger than Pillow's default decompression-bomb limit) are
+    read, a big JPEG decoded at reduced size means the same thing to the model as a
+    full decode, an absurdly large image is still refused, and an unreadable file is
+    retried once the size limit changes
 
 It uses the real CLIP model from the local cache (it never goes online), so run it
 the same way as the safety tests -- inside the project's venv, after the classifier
@@ -161,6 +165,79 @@ def test_find_maps_agrees_with_the_classifier_and_ranks_sensibly(m, model, proce
         check(top == f"{name}.png", f"searching 'a solid {name} image' puts {name}.png first (got {top})")
 
 
+def test_huge_maps(m, model, processor, tmp):
+    print("\n[huge maps] print-size maps are read; absurd ones are still refused")
+    sys.modules.pop("fgu_find_maps", None)
+    f = importlib.import_module("fgu_find_maps")
+    lib = os.path.join(tmp, "huge")
+    os.makedirs(lib)
+
+    # 195 million pixels: over Pillow's default limit (179 million), under ours.
+    big = os.path.join(lib, "big.png")
+    Image.new("RGB", (15000, 13000), (120, 100, 80)).save(big)
+    check(15000 * 13000 > 2 * 89_478_485, "the test map really is over Pillow's default limit")
+    try:
+        tensor = m.preprocess_image(processor, big)
+        check(tuple(tensor.shape) == (1, 3, 224, 224), "the classifier reads a map over the old limit")
+    except Exception as e:
+        check(False, f"the classifier reads a map over the old limit (raised {e!r})")
+    try:
+        tensor = f.read_image(lib, "big.png", "big.jpg", processor)
+        check(tuple(tensor.shape) == (1, 3, 224, 224) and os.path.isfile(os.path.join(lib, ".fgu_map_index", "thumbs", "big.jpg")),
+              "fgu_find_maps reads it and makes its thumbnail")
+    except Exception as e:
+        check(False, f"fgu_find_maps reads a map over the old limit (raised {e!r})")
+    os.remove(big)
+
+    # Reduced-size JPEG decoding must mean the same thing to the model as a full decode.
+    ramp = np.linspace(0, 255, 9000, dtype=np.uint8)
+    jpeg = os.path.join(lib, "big.jpg")
+    Image.fromarray(np.stack([np.tile(ramp, (8000, 1)), np.tile(ramp[::-1], (8000, 1)), np.full((8000, 9000), 90, np.uint8)], axis=-1)).save(jpeg, quality=60)
+    check(9000 * 8000 > m.HUGE_IMAGE_PIXELS, "the test JPEG is big enough to be decoded at reduced size")
+    drafted = m.encode_image_features(model, m.preprocess_image(processor, jpeg))
+    saved, m.HUGE_IMAGE_PIXELS = m.HUGE_IMAGE_PIXELS, 10 ** 12
+    try:
+        full = m.encode_image_features(model, m.preprocess_image(processor, jpeg))
+    finally:
+        m.HUGE_IMAGE_PIXELS = saved
+    similarity = float((drafted * full).sum())
+    check(similarity > 0.98, f"reduced-size decoding gives essentially the same embedding (cosine {similarity:.4f})")
+    os.remove(jpeg)
+
+    # Still refused: 750 million pixels, mode '1' so building it costs only ~94 MB.
+    absurd = os.path.join(lib, "absurd.png")
+    Image.new("1", (30000, 25000)).save(absurd)
+    for name, read in (("the classifier", lambda: m.preprocess_image(processor, absurd)),
+                       ("fgu_find_maps", lambda: f.read_image(lib, "absurd.png", "absurd.jpg", processor))):
+        try:
+            read()
+            check(False, f"{name} refuses an image over the ceiling")
+        except Image.DecompressionBombError:
+            check(True, f"{name} refuses an image over the ceiling")
+        except Exception as e:
+            check(False, f"{name} refuses an image over the ceiling (raised {e!r} instead)")
+    os.remove(absurd)
+
+    # A file that failed because of the size limit is retried when the limit changes.
+    small_lib = os.path.join(tmp, "retry")
+    os.makedirs(small_lib)
+    Image.fromarray(synthetic_images()["rooms"]).resize((2000, 1500)).save(os.path.join(small_lib, "three_mp.png"))
+    real_limit = f.Image.MAX_IMAGE_PIXELS
+    try:
+        f.Image.MAX_IMAGE_PIXELS = 1_000_000          # refuses anything over 2 million pixels
+        with contextlib.redirect_stdout(io.StringIO()):
+            index = f.update_index(small_lib)
+        check(index is not None and index["paths"] == [], "with a small limit the 3-megapixel map is skipped")
+        check(len(f.load_index(small_lib)["failed"]) == 1, "...and remembered as unreadable")
+        f.Image.MAX_IMAGE_PIXELS = real_limit
+        check(f.load_index(small_lib)["failed"] == set(), "once the limit changes it is no longer remembered as unreadable")
+        with contextlib.redirect_stdout(io.StringIO()):
+            index = f.update_index(small_lib)
+        check(index["paths"] == ["three_mp.png"], "...and the next run reads it")
+    finally:
+        f.Image.MAX_IMAGE_PIXELS = real_limit
+
+
 def main():
     m = load_module()
     from transformers import CLIPModel, CLIPProcessor
@@ -176,6 +253,7 @@ def main():
         test_new_path_matches_the_original_forward_pass(m, model, processor, tmp)
         test_unreadable_file_costs_only_itself(m, tmp)
         test_find_maps_agrees_with_the_classifier_and_ranks_sensibly(m, model, processor, tmp)
+        test_huge_maps(m, model, processor, tmp)
 
     print()
     if failures:
