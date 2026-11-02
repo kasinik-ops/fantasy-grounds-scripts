@@ -14,7 +14,9 @@ index   Reads every image under LIBRARY (sub-folders included) once, with the sa
 search  Ranks the library against a description and writes an HTML page of
         thumbnails (best match first) that you can open in a browser. Click one to
         open the real map. It brings the index up to date first.
-sheet   The same kind of HTML page for the whole library, grouped by folder.
+sheet   HTML pages for the whole library, grouped by folder. An index page lists the
+        folders with their map counts, and each folder's maps are split across pages
+        of at most 96, so no page ever holds the whole library.
 
 What it writes, and where: only inside LIBRARY/.fgu_map_index/ -- the index
 (index.npz, updated in place when the library changes), a small JPEG thumbnail
@@ -61,6 +63,8 @@ INDEX_FILENAME = "index.npz"
 INDEX_FORMAT = 1                      # bump if the layout of index.npz ever changes
 THUMB_SIZE = 256
 SAVE_EVERY_BATCHES = 10               # an interrupted run keeps what it has finished
+SHEET_PAGE_SIZE = 96                  # maps per picture page; a library is split across many pages
+MAX_SEARCH_RESULTS = 500              # the most a search will put on one page
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 
@@ -311,10 +315,13 @@ p.note { color:var(--muted); margin:0 0 18px; }
 .card img { width:100%; aspect-ratio:1/1; object-fit:cover; display:block; background:var(--line); }
 .card .cap { padding:8px 10px; font-size:13px; overflow-wrap:anywhere; }
 .card .cap small { display:block; color:var(--muted); }
+.nav { margin:0 0 14px; } .nav a, ul.folders a { color:var(--fg); }
+ul.folders { list-style:none; padding:0; margin:0; }
+ul.folders li { padding:7px 0; border-bottom:1px solid var(--line); }
 """
 
 
-def _card(library, index, position, score=None):
+def _card(library, index, position, score=None, thumbs_prefix="thumbs/"):
     rel = index["paths"][position]
     target = pathlib.Path(os.path.abspath(os.path.join(library, *rel.split("/")))).as_uri()
     folder, _, name = rel.rpartition("/")
@@ -323,7 +330,7 @@ def _card(library, index, position, score=None):
         extra += f" &middot; match {score:.3f}"
     extra += "</small>"
     return (f'<div class="card"><a href="{html.escape(target, quote=True)}">'
-            f'<img loading="lazy" src="thumbs/{html.escape(index["thumbs"][position], quote=True)}" alt="">'
+            f'<img loading="lazy" src="{thumbs_prefix}{html.escape(index["thumbs"][position], quote=True)}" alt="">'
             f'<div class="cap">{html.escape(name)}{extra}</div></a></div>')
 
 
@@ -377,7 +384,10 @@ def cmd_search(args):
     if loaded is None:
         return 2
     model, processor = loaded
-    ranked = rank(model, processor, index, args.query)[:args.top]
+    top = min(args.top, MAX_SEARCH_RESULTS)
+    if top < args.top:
+        print(f"(Showing the best {top}; a page never holds more than {MAX_SEARCH_RESULTS} maps.)")
+    ranked = rank(model, processor, index, args.query)[:top]
 
     print(f"\n🔎 Best matches for \"{args.query}\":")
     for place, (score, position) in enumerate(ranked, 1):
@@ -401,6 +411,55 @@ def cmd_search(args):
     return 0
 
 
+def sheet_pages(library, index, per_page=SHEET_PAGE_SIZE):
+    """{file name: html} for a picture sheet of the whole library, split so that no page
+    ever holds more than per_page maps: an index page ('index.html') listing each folder
+    with its map count and links to its pages, and one or more pages per folder. The pages
+    sit one level below the thumbnails folder, hence the '../'."""
+    groups = {}
+    for position, rel in enumerate(index["paths"]):
+        groups.setdefault(rel.split("/")[0] if "/" in rel else "", []).append(position)
+    pages = {}
+    rows = ""
+    for number, folder in enumerate(sorted(groups, key=lambda f: (f != "", f.lower())), 1):
+        positions = groups[folder]
+        label = folder or "(top level)"
+        slug = re.sub(r"[^a-z0-9]+", "-", folder.lower()).strip("-")[:30] or "top-level"
+        count = max(1, -(-len(positions) // per_page))
+        names = [f"{number:03d}-{slug}_p{n}.html" for n in range(1, count + 1)]
+        for n, name in enumerate(names):
+            nav = '<p class="nav"><a href="index.html">&larr; All folders</a>'
+            if n > 0:
+                nav += f' &middot; <a href="{names[n - 1]}">Previous</a>'
+            nav += f" &middot; Page {n + 1} of {count}"
+            if n < count - 1:
+                nav += f' &middot; <a href="{names[n + 1]}">Next</a>'
+            nav += "</p>"
+            cards = "".join(_card(library, index, p, thumbs_prefix="../thumbs/")
+                            for p in positions[n * per_page:(n + 1) * per_page])
+            pages[name] = _page(f"{label} ({len(positions)} maps)", "Click a map to open it.",
+                                f'{nav}<div class="grid">{cards}</div>{nav}')
+        links = " ".join(f'<a href="{name}">{n}</a>' for n, name in enumerate(names, 1))
+        rows += f"<li><strong>{html.escape(label)}</strong> &middot; {len(positions)} maps &middot; pages {links}</li>"
+    first = {"index.html": _page("Map library", f"{len(index['paths'])} maps in {len(groups)} folders, "
+                                                f"at most {per_page} per page. Pick a folder.",
+                                 f'<ul class="folders">{rows}</ul>')}
+    first.update(pages)
+    return first
+
+
+def write_sheet(library, pages):
+    """Writes the pages into a new folder of their own inside the index folder (never into
+    an existing one) and returns the path of its index page."""
+    os.makedirs(index_dir(library), exist_ok=True)
+    folder = unique_path(os.path.join(index_dir(library), "sheet_" + time.strftime("%Y-%m-%d_%H%M%S")))
+    os.makedirs(folder)
+    for name, page_html in pages.items():
+        with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
+            f.write(page_html)
+    return os.path.join(folder, "index.html")
+
+
 def cmd_sheet(args):
     index = update_index(args.dir, args.batch_size)
     if index is None:
@@ -408,16 +467,10 @@ def cmd_sheet(args):
     if not index["paths"]:
         print("❌ No maps to show.")
         return 1
-    groups = {}
-    for position, rel in enumerate(index["paths"]):
-        groups.setdefault(rel.split("/")[0] if "/" in rel else "", []).append(position)
-    body = ""
-    for folder in sorted(groups, key=lambda f: (f != "", f.lower())):
-        cards = "".join(_card(args.dir, index, p) for p in groups[folder])
-        body += f'<h2>{html.escape(folder or "(top level)")} &middot; {len(groups[folder])}</h2><div class="grid">{cards}</div>'
-    path = write_page(args.dir, "contact_sheet",
-                      _page("Map library", f"{len(index['paths'])} maps, grouped by folder. Click a map to open it.", body))
-    print(f"\n🖼  Picture page: {path}")
+    pages = sheet_pages(args.dir, index, args.per_page)
+    path = write_sheet(args.dir, pages)
+    print(f"\n🖼  {len(index['paths'])} maps split across {len(pages) - 1} page(s), at most {args.per_page} each.")
+    print(f"   Start here: {path}")
     maybe_open(path, args.open)
     return 0
 
@@ -433,9 +486,13 @@ def build_parser():
         p.add_argument("--batch-size", type=int, default=16, help="images per model pass (default: 16)")
         if name != "index":
             p.add_argument("--open", action="store_true", help="open the page in your browser when done")
+        if name == "sheet":
+            p.add_argument("--per-page", type=int, default=SHEET_PAGE_SIZE,
+                           help=f"most maps on one page (default: {SHEET_PAGE_SIZE}, at most 500)")
         if name == "search":
             p.add_argument("query", help='what you are looking for, e.g. "tavern interior at night"')
-            p.add_argument("--top", type=int, default=24, help="how many results to show (default: 24)")
+            p.add_argument("--top", type=int, default=24,
+                           help=f"how many results to show (default: 24, at most {MAX_SEARCH_RESULTS})")
             p.add_argument("--no-page", action="store_true", help="don't write the HTML picture page")
             p.add_argument("--json", action="store_true",
                            help="also print the results as one machine-readable line (used by fgu_ui.py)")
@@ -449,6 +506,9 @@ def main(argv=None):
         return 1
     if args.batch_size < 1 or (args.command == "search" and args.top < 1):
         print("❌ --batch-size and --top must be at least 1.")
+        return 1
+    if args.command == "sheet" and not 1 <= args.per_page <= 500:
+        print("❌ --per-page must be between 1 and 500.")
         return 1
     return {"index": cmd_index, "search": cmd_search, "sheet": cmd_sheet}[args.command](args)
 

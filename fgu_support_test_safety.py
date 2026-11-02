@@ -621,6 +621,67 @@ def test_find_maps_picks_up_changes_and_never_overwrites_a_page():
         check(read_bytes(first) == b"<p>first</p>", "the first page is byte-for-byte as it was written")
 
 
+def test_find_maps_sheet_is_split_into_small_pages():
+    print("\n[fgu_find_maps.py] sheet never puts the whole library on one page")
+    import importlib
+    import re as regex
+    sys.path.insert(0, REPO_ROOT)
+    sys.argv = ["fgu_find_maps.py"]
+    sys.modules.pop("fgu_find_maps", None)
+    m = importlib.import_module("fgu_find_maps")
+
+    # 1. Pure: a 4,322-map index (no model, no files), the size of the real library.
+    paths = ([f"dungeons/m{i:05d}.png" for i in range(1202)] + [f"unclassified/m{i:05d}.png" for i in range(1192)]
+             + [f"folder{n:02d}/m{i:03d}.png" for n in range(60) for i in range(30)] + [f"top{i}.png" for i in range(128)])
+    fake = {"paths": paths, "thumbs": [f"{i:020x}.jpg" for i in range(len(paths))]}
+    pages = m.sheet_pages("/library", fake)
+    cards = {name: html.count('class="card"') for name, html in pages.items()}
+    check(len(paths) == 4322, "the fake library has 4,322 maps")
+    check(max(cards.values()) <= m.SHEET_PAGE_SIZE == 96, f"no page holds more than {m.SHEET_PAGE_SIZE} maps (largest: {max(cards.values())})")
+    check(cards["index.html"] == 0, "the index page lists folders, not maps")
+    check(sum(cards.values()) == len(paths), "every map is on exactly one page")
+    shown = regex.findall(r'src="\.\./thumbs/([0-9a-f]{20}\.jpg)"', "".join(pages.values()))
+    check(len(shown) == len(set(shown)) == len(paths), "every thumbnail appears exactly once")
+    index_html = pages["index.html"]
+    links = regex.findall(r'href="([^"]+\.html)"', index_html)
+    check(links and all(link in pages for link in links), "every link on the index page points at a page that exists")
+    check(len(index_html) < 100_000, f"the index page is small ({len(index_html):,} characters)")
+    check(len([n for n in pages if "dungeons" in n]) == 13, "the 1,202-map folder is split into 13 pages")
+    small = m.sheet_pages("/library", fake, per_page=10)
+    check(max(html.count('class="card"') for html in small.values()) <= 10, "--per-page is honoured")
+
+    # 2. Real run: files on disk, links that resolve, nothing outside the cache folder.
+    with tempfile.TemporaryDirectory() as tmp:
+        lib = os.path.join(tmp, "lib")
+        for folder, count in (("a", 25), ("b", 3), ("", 2)):
+            os.makedirs(os.path.join(lib, folder), exist_ok=True)
+            for i in range(count):
+                make_grid_image(os.path.join(lib, folder, f"map{i:02d}.png"), spacing=30 + i)
+        originals = {rel: read_bytes(os.path.join(lib, *rel.split("/"))) for rel in all_files(lib)}
+
+        run_in_process("fgu_find_maps.py", ["sheet", "--dir", lib, "--per-page", "10"], allowed_roots=[lib])
+        sheets = [f for f in all_files(lib) if f.startswith(CACHE_DIR + "/sheet_") and f.endswith(".html")]
+        names = sorted(f.rsplit("/", 1)[-1] for f in sheets)
+        check("index.html" in names and len(names) == 1 + 3 + 1 + 1,
+              f"index page + 3 pages for 25 maps + 1 + 1 (got {names})")
+        sheet_dir = os.path.dirname(os.path.join(lib, sheets[0]))
+        broken = []
+        for f in sheets:
+            html = read_bytes(os.path.join(lib, f)).decode("utf-8")
+            check(html.count('class="card"') <= 10, f"{f.rsplit('/', 1)[-1]} holds at most 10 maps")
+            for target in regex.findall(r'(?:src|href)="(\.\./thumbs/[^"]+|[^":]+\.html)"', html):
+                if not os.path.isfile(os.path.normpath(os.path.join(sheet_dir, target))):
+                    broken.append((f, target))
+        check(not broken, f"every thumbnail and page link resolves on disk (broken: {broken})")
+        check(all(read_bytes(os.path.join(lib, rel)) == b for rel, b in originals.items()), "every map is unchanged")
+
+        first = {f: read_bytes(os.path.join(lib, f)) for f in sheets}
+        run_in_process("fgu_find_maps.py", ["sheet", "--dir", lib, "--per-page", "10"], allowed_roots=[lib])
+        check(all(read_bytes(os.path.join(lib, f)) == b for f, b in first.items()), "a second run left the first run's pages untouched")
+        check(m.main(["sheet", "--dir", lib, "--per-page", "0"]) == 1 and m.main(["sheet", "--dir", lib, "--per-page", "501"]) == 1,
+              "--per-page outside 1-500 is refused")
+
+
 # ---------------------------------------------------------------------------
 # fgu_detect_grid.py
 # ---------------------------------------------------------------------------
@@ -684,6 +745,7 @@ def main():
     test_classify_report_is_written_and_never_overwrites()
     test_find_maps_writes_only_its_cache_and_never_touches_maps()
     test_find_maps_picks_up_changes_and_never_overwrites_a_page()
+    test_find_maps_sheet_is_split_into_small_pages()
     test_detect_grid_only_creates_the_sidecar()
     test_detect_grid_skips_existing_sidecar_without_force()
     test_detect_grid_force_overwrites_but_preserves_other_data()

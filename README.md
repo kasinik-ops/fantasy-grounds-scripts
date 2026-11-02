@@ -134,7 +134,7 @@ For more control (such as `--top`), open a terminal in this folder and use the P
 2. **Open the picture page.** When it finishes it prints the path of an HTML page, something like `.../maps/.fgu_map_index/search_tavern-interior-at-night_2026-11-01_114716.html`, and lists the best matches in the terminal. Open that page in a browser, or add `--open` to the command to have it open for you. You get a grid of thumbnails, best match first, with the folder and a similarity score under each. Click a thumbnail to open the real map file.
 3. **Use the map.** From there, copy it (and its `.xml`) into Fantasy Grounds as described under **Getting a map into Fantasy Grounds** below.
 
-To just look through everything, `sheet` writes a page of the whole library, grouped by folder:
+To just look through everything, `sheet` writes pages for the whole library. It never puts the whole library on one page: you get an index page that lists each folder with its map count and links to that folder's pages, and every page holds at most 96 maps (change it with `--per-page`, up to 500). The pages go in a new `sheet_<date>_<time>` folder inside `.fgu_map_index`, and the command prints which file to open first (`index.html`). If you would rather click through a library than open files, the `fgu_ui.py` window has a Browse tab that does the same thing.
 
 ```
 python fgu_find_maps.py sheet --dir "/path/to/maps"
@@ -143,9 +143,10 @@ python fgu_find_maps.py sheet --dir "/path/to/maps"
 | Command / flag | Default | Purpose |
 | --- | --- | --- |
 | `search --dir DIR "words"` | | Rank the library against a description and write a picture page |
-| `sheet --dir DIR` | | Write a picture page of the whole library, grouped by folder |
+| `sheet --dir DIR` | | Write picture pages for the whole library: an index of folders, then pages of at most 96 maps |
+| `--per-page N` | `96` | (`sheet`) Most maps on one page (1 to 500) |
 | `index --dir DIR` | | Only update the index (see below); writes no page |
-| `--top N` | `24` | (`search`) How many results to show |
+| `--top N` | `24` | (`search`) How many results to show (at most 500) |
 | `--open` | off | (`search`, `sheet`) Open the page in your browser when it is done |
 | `--batch-size N` | `16` | Maps per model pass while reading; lower it if memory is tight |
 
