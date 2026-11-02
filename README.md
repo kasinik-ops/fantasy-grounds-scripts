@@ -81,19 +81,56 @@ It only scans files sitting directly in the selected folder, not subdirectories 
 
 **fgu_find_maps.py**
 
-Finds maps by describing them, and shows a library as a page of pictures. Python only; there is no dialog launcher for it yet. It reads every map under the folder (sub-folders included, so it works on a library the classifier has already sorted) and keeps what it learned in a hidden `.fgu_map_index` folder inside that library, so after the first pass it only reads maps that are new or changed. A map that was only moved to another folder (what the classifier does) is recognised and isn't read again.
+Finds maps by describing them ("tavern interior at night", "cave with an underground river"), and shows a whole library as a page of pictures. It looks at the images themselves, not their file names or folders, so it also finds maps that sit in `unclassified`, `map scenes` or a folder you named yourself. It is the same CLIP model the classifier uses. Python only; there is no dialog launcher for it yet.
+
+*Before you start*
+
+1. Run the classifier launcher once (`run_classifier_map.command` on a Mac, `run_classifier_map.bat` on Windows). That creates the `venv` folder with everything installed and downloads the CLIP model. This tool never goes online, so it can't download the model itself; if the model is missing it says so and stops.
+2. Open a terminal in this folder and use the Python in that `venv`:
+   - Mac: `source venv/bin/activate`, then run the commands below as written.
+   - Windows: put `venv\Scripts\python.exe` where the commands below say `python`.
+
+*Using it*
+
+1. **Search.** Point it at your map library (the top folder; sub-folders are included, so it works on a library the classifier has already sorted) and say what you want:
+
+   ```
+   python fgu_find_maps.py search --dir "/path/to/maps" "tavern interior at night"
+   ```
+
+   The first time, it reads every map once to learn what it looks like. That is the slow part and scales with the number of maps and their size. It prints its progress, and it saves as it goes, so if you stop it and run it again it carries on rather than starting over. After that a search takes a few seconds.
+2. **Open the picture page.** When it finishes it prints the path of an HTML page, something like `.../maps/.fgu_map_index/search_tavern-interior-at-night_2026-11-01_114716.html`, and lists the best matches in the terminal. Open that page in a browser, or add `--open` to the command to have it open for you. You get a grid of thumbnails, best match first, with the folder and a similarity score under each. Click a thumbnail to open the real map file.
+3. **Use the map.** From there, copy it (and its `.xml`) into Fantasy Grounds as described under **Getting a map into Fantasy Grounds** below.
+
+To just look through everything, `sheet` writes a page of the whole library, grouped by folder:
 
 ```
-python fgu_find_maps.py search --dir "/path/to/maps" "tavern interior at night"
-python fgu_find_maps.py sheet  --dir "/path/to/maps"
-python fgu_find_maps.py index  --dir "/path/to/maps"
+python fgu_find_maps.py sheet --dir "/path/to/maps"
 ```
 
-- `search` ranks the library against your description and writes an HTML page of thumbnails, best match first, with a similarity score. Open the page in a browser (or add `--open`) and click a map to open the real file. `--top N` sets how many to show (default 24).
-- `sheet` writes the same kind of page for the whole library, grouped by folder.
-- `index` only updates the index. `search` and `sheet` do that first themselves, so you rarely need it, except to do the slow first pass ahead of time.
+| Command / flag | Default | Purpose |
+| --- | --- | --- |
+| `search --dir DIR "words"` | | Rank the library against a description and write a picture page |
+| `sheet --dir DIR` | | Write a picture page of the whole library, grouped by folder |
+| `index --dir DIR` | | Only update the index (see below); writes no page |
+| `--top N` | `24` | (`search`) How many results to show |
+| `--open` | off | (`search`, `sheet`) Open the page in your browser when it is done |
+| `--batch-size N` | `16` | Maps per model pass while reading; lower it if memory is tight |
 
-What it writes is limited to `.fgu_map_index/` inside the library: the index (`index.npz`, updated in place), a small JPEG thumbnail per map, and the HTML pages. Your maps are only read. A page is never overwritten (a new one gets the next free name), nothing is ever deleted, and an unreadable file is skipped and remembered until it changes. Thumbnails of maps you later remove stay behind; the folder is only a cache, so it is safe to delete by hand whenever you like. It never goes online: it uses the CLIP model the classifier downloaded, and tells you to run the classifier once if that is missing. It is the same model, so "find a map" is only as good as CLIP's idea of what a description looks like; the scores rank maps against each other, they are not a probability.
+*Writing good searches*
+
+- Describe the place and what is in it, not the file: "frozen lake with a small fishing hut", "ship deck at sea", "sewer tunnels". The tool already wraps your words in "a top-down battle map of ...", so there is no need to say that.
+- The scores are only useful for ordering. In testing on a library of about 4,300 maps they sat in a narrow band (around 0.31 to 0.36) even for good matches, so don't read anything into the exact number or look for a cut-off. Judge by the thumbnails.
+- If the first wording misses, try another ("inn", "tavern", "bar room"). Distinctive features (a cave, a ship) worked better than generic ones ("a room").
+- CLIP is a general-purpose model, not one trained on battle maps. Treat the page as a shortlist to look through, not a guarantee.
+
+*Keeping the index up to date*
+
+You normally don't need to do anything: `search` and `sheet` bring the index up to date themselves before they run, reading only maps that are new or have changed since last time. A map that was merely moved to another folder (which is what the classifier does when it sorts) is recognised and isn't read again, so sorting a library doesn't mean re-reading it. A file it can't read is skipped, named in the output, and not retried until it changes. Use `index` on its own only when you want to do the slow first pass ahead of time, for example overnight.
+
+*What it writes, and how to reset it*
+
+Everything it writes goes into a hidden `.fgu_map_index` folder inside the library: the index (`index.npz`, updated in place), a small JPEG thumbnail per map in `thumbs/`, and the HTML pages. In total that came to about 17 KB per map on a 4,300-map library (73 MB), almost all of it thumbnails. Your maps are only ever read. A page is never overwritten (a new one gets the next free name), nothing is ever deleted, and it does not touch the `.xml` files. Because nothing is deleted, pages pile up with each search and thumbnails of maps you later remove stay behind. The folder is only a cache, so you can delete old pages, or the whole `.fgu_map_index` folder, by hand at any time; the next run simply rebuilds what is missing. Very large print-size maps are supported (see **Very large maps** below).
 
 **fgu_detect_grid.py**
 
