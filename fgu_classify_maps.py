@@ -10,10 +10,15 @@ import subprocess
 import shutil
 import json
 import time
-import torch
-import pillow_heif
-from PIL import Image
-from transformers import CLIPModel, CLIPProcessor
+try:
+    import torch
+    import pillow_heif
+    from PIL import Image
+    from transformers import CLIPModel, CLIPProcessor
+except ImportError as e:
+    sys.exit(f"\u274c The Python package '{e.name}' is missing, so this is probably not the project's Python.\n"
+             "   Run it with the Python the launchers set up: on a Mac, first `source venv/bin/activate`; on Windows, use\n"
+             "   `venv\\Scripts\\python.exe`. Or just start it from its launcher (run_ui.command / run_ui.bat), which sets everything up.")
 
 # This script's own logic is OS-agnostic (os.path/os.walk work cross-platform);
 # the only Mac-specific piece is the Apple Photos/AppleScript integration

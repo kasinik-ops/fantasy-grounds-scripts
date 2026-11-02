@@ -26,7 +26,7 @@ Then, as you need them: **Sort** your maps into category folders (with a preview
 | `fgu_support_maptest.py` | Ranks a campaign's maps by display load (read-only) | Check | | `python fgu_support_maptest.py` |
 | `fgu_fix_macos.sh` | Deep clean for FGU on macOS. **Deletes data.** | not in the window, on purpose | | `bash fgu_fix_macos.sh` |
 
-The window runs the other scripts for you with the same flags you would type, so everything below applies either way. The single-tool launchers show a few dialogs instead of the window. The test and support scripts are covered under **Development**.
+The window runs the other scripts for you with the same flags you would type, so everything below applies either way. To run one from a command line yourself, use the project's Python (the `venv` that any launcher creates), not your computer's own: on a Mac run `source venv/bin/activate` first, and on Windows put `venv\Scripts\python.exe` where the commands say `python`. A script started with the wrong Python says so and tells you this. The single-tool launchers show a few dialogs instead of the window. The test and support scripts are covered under **Development**.
 
 ## The map tools window (`fgu_ui.py`)
 

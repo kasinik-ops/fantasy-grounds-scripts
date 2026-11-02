@@ -316,6 +316,37 @@ def test_fast_image_processor(m, model, processor, tmp):
               f"{module.__name__}: a 72-megapixel map is shrunk to {shrunk.width}x{shrunk.height}, same shape")
 
 
+def test_wrong_python_is_explained():
+    print("\n[wrong Python] a script started without the project's packages says what to do")
+    import subprocess
+    code = (
+        "import runpy, sys\n"
+        "results = {}\n"
+        "def attempt(script):\n"
+        "    sys.argv = [script]\n"
+        "    try:\n"
+        "        runpy.run_path(script, run_name='__main__')\n"
+        "        results[script] = 'ran'\n"
+        "    except SystemExit as e:\n"
+        "        results[script] = str(e.code)\n"
+        "sys.modules['numpy'] = None\n"
+        "attempt('fgu_ui.py')\n"
+        "del sys.modules['numpy']\n"
+        "sys.modules['pillow_heif'] = None\n"
+        "for script in ('fgu_find_maps.py', 'fgu_classify_maps.py', 'fgu_detect_grid.py'):\n"
+        "    attempt(script)\n"
+        "import json; print('RESULTS ' + json.dumps(results))\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, text=True, timeout=300,
+                          env=dict(os.environ, PYTHONUTF8="1", PYTHONPATH=REPO_ROOT))
+    line = next((l for l in done.stdout.splitlines() if l.startswith("RESULTS ")), None)
+    results = __import__("json").loads(line[len("RESULTS "):]) if line else {}
+    check(len(results) == 4, f"all four scripts were tried (got {sorted(results)}; stderr: {done.stderr[-200:]!r})")
+    for script, message in sorted(results.items()):
+        check("is missing" in message and "source venv/bin/activate" in message and "venv\\Scripts\\python.exe" in message,
+              f"{script}: names the missing package and says to use the project's Python (Mac and Windows)")
+
+
 def test_indexing_shows_progress(m, model, processor, tmp):
     print("\n[progress] indexing says what it is doing, so it never looks hung")
     import re
@@ -374,6 +405,7 @@ def main():
         test_find_maps_agrees_with_the_classifier_and_ranks_sensibly(m, model, processor, tmp)
         test_huge_maps(m, model, processor, tmp)
         test_fast_image_processor(m, model, processor, tmp)
+        test_wrong_python_is_explained()
         test_indexing_shows_progress(m, model, processor, tmp)
 
     print()

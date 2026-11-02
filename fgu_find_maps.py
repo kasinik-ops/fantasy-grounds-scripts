@@ -40,10 +40,15 @@ import re
 import sys
 import time
 
-import numpy as np
-import pillow_heif
-import torch
-from PIL import Image
+try:
+    import numpy as np
+    import pillow_heif
+    import torch
+    from PIL import Image
+except ImportError as e:
+    sys.exit(f"\u274c The Python package '{e.name}' is missing, so this is probably not the project's Python.\n"
+             "   Run it with the Python the launchers set up: on a Mac, first `source venv/bin/activate`; on Windows, use\n"
+             "   `venv\\Scripts\\python.exe`. Or just start it from its launcher (run_ui.command / run_ui.bat), which sets everything up.")
 
 pillow_heif.register_heif_opener()
 

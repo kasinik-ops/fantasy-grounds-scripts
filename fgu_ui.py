@@ -42,7 +42,12 @@ import time
 import urllib.parse
 import webbrowser
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError as e:
+    sys.exit(f"\u274c The Python package '{e.name}' is missing, so this is probably not the project's Python.\n"
+             "   Run it with the Python the launchers set up: on a Mac, first `source venv/bin/activate`; on Windows, use\n"
+             "   `venv\\Scripts\\python.exe`. Or just start it from its launcher (run_ui.command / run_ui.bat), which sets everything up.")
 
 REPO = os.path.dirname(os.path.abspath(__file__))
 
