@@ -251,11 +251,19 @@ def test_fast_image_processor(m, model, processor, tmp):
     sys.modules.pop("fgu_find_maps", None)
     f = importlib.import_module("fgu_find_maps")
     have_torchvision = importlib.util.find_spec("torchvision") is not None
+    def is_fast(proc):
+        """Does this processor use torchvision? 4.x names it ...Fast; 5.x makes it the
+        CLIPImageProcessor class itself, built on TorchvisionBackend."""
+        cls = type(proc.image_processor)
+        return cls.__name__.endswith("Fast") or any(base.__name__ == "TorchvisionBackend" for base in cls.__mro__)
+
     name = type(processor.image_processor).__name__
-    print(f"  info - torchvision installed: {have_torchvision}; the classifier is using {name}")
-    check(name.endswith("Fast") == have_torchvision,
-          "the fast image processor is used exactly when torchvision is installed")
-    check(type(f.load_model()[1].image_processor).__name__ == name, "fgu_find_maps picks the same processor")
+    print(f"  info - transformers {transformers.__version__}, torchvision installed: {have_torchvision}; the classifier is using {name}")
+    check(is_fast(processor) == have_torchvision, "the fast image processor is used exactly when torchvision is installed")
+    check(is_fast(f.load_model()[1]) == is_fast(processor), "fgu_find_maps picks the same kind of processor")
+
+    fast_kwargs = m.fast_processor_kwargs()
+    check(fast_kwargs == f.fast_processor_kwargs(), f"both scripts ask for the fast processor the same way ({fast_kwargs or 'the default'})")
 
     class Stub:
         calls = []
@@ -263,8 +271,9 @@ def test_fast_image_processor(m, model, processor, tmp):
 
         @classmethod
         def from_pretrained(cls, model_id, **kwargs):
+            kwargs = {k: v for k, v in kwargs.items() if k != "local_files_only"}
             cls.calls.append(kwargs)
-            if kwargs.get("use_fast") is True:
+            if kwargs == fast_kwargs:
                 raise cls.failure
             return "standard processor"
 
@@ -276,7 +285,7 @@ def test_fast_image_processor(m, model, processor, tmp):
             noise = io.StringIO()
             with contextlib.redirect_stdout(noise):
                 got = (m.load_processor("x", True), f.load_processor(True))
-            check(got == ("standard processor", "standard processor") and [c["use_fast"] for c in Stub.calls] == [True, False, True, False],
+            check(got == ("standard processor", "standard processor") and Stub.calls == [fast_kwargs, {"use_fast": False}] * 2,
                   f"when the fast one fails with {type(failure).__name__}, both scripts fall back to the standard one")
             check(("isn't available" in noise.getvalue()) == isinstance(failure, RuntimeError),
                   "...and say so only when the failure is unexpected (not for a plain missing torchvision)")
@@ -285,7 +294,7 @@ def test_fast_image_processor(m, model, processor, tmp):
 
     if have_torchvision:
         standard = transformers.CLIPProcessor.from_pretrained(m.MODEL_ID, local_files_only=True, use_fast=False)
-        check(not type(standard.image_processor).__name__.endswith("Fast"), "the standard processor really is the standard one")
+        check(not is_fast(standard), "the standard processor really is the standard one")
         cosines = []
         for name_, array in synthetic_images().items():
             path = os.path.join(tmp, f"fp_{name_}.png")

@@ -334,15 +334,30 @@ def softmax_probs(model, image_features, text_features):
 
 SHRINK_TARGET_PIXELS = 4_000_000   # a huge map is box-shrunk to about this many pixels first
 
+def fast_processor_kwargs():
+    """How to ask transformers for its fast (torchvision) image processor. In 4.x that is
+    use_fast=True; in 5.x use_fast is deprecated and the fast one is simply the default
+    whenever torchvision is installed."""
+    import transformers
+    return {} if int(transformers.__version__.split(".")[0]) >= 5 else {"use_fast": True}
+
+def _processor_attempts():
+    # the fast one first, then ways of asking for the standard one (the flag is deprecated
+    # in 5.x and will go, so the newer spelling is tried too, and plain defaults last)
+    return [fast_processor_kwargs(), {"use_fast": False}, {"backend": "pil"}, {}]
+
 def load_processor(model_id, local_files_only):
-    """The CLIP processor, with the fast image processor if torchvision allows it, else
-    the standard one. Never fails just because the fast one isn't available."""
-    try:
-        return CLIPProcessor.from_pretrained(model_id, local_files_only=local_files_only, use_fast=True)
-    except Exception as e:
-        if not isinstance(e, (ImportError, OSError)):
-            print(f"(Fast image processing isn't available here ({e.__class__.__name__}); using the standard one.)")
-        return CLIPProcessor.from_pretrained(model_id, local_files_only=local_files_only, use_fast=False)
+    """The CLIP processor, with the fast image processor if it works here, else the standard
+    one. Never fails just because the fast one isn't available."""
+    attempts = _processor_attempts()
+    for number, kwargs in enumerate(attempts):
+        try:
+            return CLIPProcessor.from_pretrained(model_id, local_files_only=local_files_only, **kwargs)
+        except Exception as e:
+            if number == 0 and not isinstance(e, (ImportError, OSError)):
+                print(f"(Fast image processing isn't available here ({e.__class__.__name__}); using the standard one.)")
+            if number == len(attempts) - 1:
+                raise
 
 def shrink_if_huge(image):
     """A map over HUGE_IMAGE_PIXELS is box-shrunk to a few megapixels before the model's own

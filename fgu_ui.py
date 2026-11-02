@@ -190,7 +190,9 @@ UPDATE_MODEL_CODE = (
     f"n = '{MODEL_ID}'\n"
     "print('Updating the AI model cache (the first time this downloads about 600 MB; needs internet)...', flush=True)\n"
     "CLIPModel.from_pretrained(n)\n"
-    "CLIPProcessor.from_pretrained(n, use_fast=False)\n"
+    "import transformers\n"
+    "# only 4.x needs the flag to leave out the image-processor warning; in 5.x the flag is deprecated\n"
+    "CLIPProcessor.from_pretrained(n, **({} if int(transformers.__version__.split('.')[0]) >= 5 else {'use_fast': False}))\n"
     "print('The AI model cache is up to date.')\n"
 )
 
