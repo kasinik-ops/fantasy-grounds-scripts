@@ -156,7 +156,7 @@ def open_with_default_app(path):
 UPDATE_MODEL_CODE = (
     "from transformers import CLIPModel, CLIPProcessor\n"
     f"n = '{MODEL_ID}'\n"
-    "print('Updating the AI model cache (the first time this downloads a few hundred MB; needs internet)...', flush=True)\n"
+    "print('Updating the AI model cache (the first time this downloads about 600 MB; needs internet)...', flush=True)\n"
     "CLIPModel.from_pretrained(n)\n"
     "CLIPProcessor.from_pretrained(n)\n"
     "print('The AI model cache is up to date.')\n"
@@ -640,7 +640,7 @@ p { margin:6px 0; }
 <div class="panel" id="panel-setup" hidden>
   <h2>AI model</h2>
   <p id="model-state" class="muted"></p>
-  <div class="row"><button id="update-model" class="stacked">Update AI model cache<small>Requires internet access</small></button><span class="muted">The first time this downloads the model (a few hundred MB); after that it checks for newer files. Everything else works offline.</span></div>
+  <div class="row"><button id="update-model" class="stacked">Update AI model cache<small>Requires internet access</small></button><span class="muted">The first time this downloads the model (about 600 MB); after that it checks for newer files. Everything else works offline.</span></div>
   <h2 style="margin-top:18px">Index</h2>
   <p class="muted">Finding and browsing use an index of your library, kept in a hidden <code>.fgu_map_index</code> folder inside it. The first build reads every map once and can take a long time on a big library; after that only new maps are read. Searching also updates it by itself.</p>
   <div class="row"><button id="index" class="primary">Build / update the index</button></div>
