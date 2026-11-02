@@ -13,6 +13,8 @@ open files:
   - that it can only open a map the index lists, and only serves thumbnails
   - that every button starts exactly the command it should (sorting and undo need
     the confirmation box; a search description can't become part of a shell command)
+  - that Sort and Grids can be pointed at any one folder (not just the library), and
+    that the Check tool runs the read-only map-load report on a campaign
   - that it writes nothing itself, and that the real Index, Search, Sort-preview,
     Sort and Undo buttons work end to end and leave files exactly as they should be
 
@@ -118,6 +120,18 @@ def make_library(root, names_colours):
     return originals
 
 
+def make_grid_png(path, spacing=50, size=300):
+    """A noisy image with a clear square grid on it, enough for the grid detector."""
+    rng = np.random.default_rng(0)
+    img = rng.integers(80, 120, size=(size, size, 3)).astype(np.uint8)
+    for x in range(0, size, spacing):
+        img[:, x:x + 2] = (30, 30, 30)
+    for y in range(0, size, spacing):
+        img[y:y + 2, :] = (30, 30, 30)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    Image.fromarray(img).save(path)
+
+
 def all_files(root):
     found = []
     for dirpath, _, files in os.walk(root):
@@ -201,6 +215,8 @@ def test_big_library_is_never_listed(server, tmp):
     check(len(f["folders"]) == ui.MAX_FOLDERS and f["more"] == 602 - ui.MAX_FOLDERS,
           f"the folder list is capped at {ui.MAX_FOLDERS} of 602 folders, with a 'more' count (showed {len(f['folders'])}, {f['more']} more)")
     check(f["folders"][0]["name"] == "dungeons" and f["folders"][0]["count"] == 4200, "folders come with their counts, biggest first")
+    check(f["folders"][0]["path"] == os.path.join(lib, "dungeons") and any(r["name"] == "" and r["path"] == lib for r in f["folders"]),
+          "...and their full path, which is what the folder boxes offer as choices")
 
     status, page = client.json("GET", "/api/browse?" + q({"lib": lib, "folder": "dungeons", "page": 0}))
     check(status == 200 and len(page["items"]) == ui.PAGE_SIZE == 48, f"a page of 4,200 maps holds exactly {ui.PAGE_SIZE}")
@@ -254,6 +270,18 @@ def test_commands():
         check("--undo" in undo and "-y" in undo, "Undo with a real undo file and the tick box runs --undo")
     finally:
         os.remove(os.path.join(lib, "fgu_moves_2026-01-01_000000.jsonl"))
+
+    _, check_cmd = ui.build_command("check", None, {})
+    check_ok = "--no-color" in check_cmd and check_cmd[check_cmd.index("--top") + 1] == "25" and "--campaign" not in check_cmd
+    check_ok = check_ok and os.path.basename(check_cmd[1]) == "fgu_support_maptest.py"
+    check_big = ui.build_command("check", None, {"top": 100000})[1]
+    check_camp = ui.build_command("check", None, {"campaign": lib})[1]
+    check_flag = "--campaign" in check_camp and check_camp[check_camp.index("--campaign") + 1] == lib
+    check(check_ok, "Check runs the map-load report with no colour codes, 25 worst maps, and no campaign unless given one")
+    check(check_big[check_big.index("--top") + 1] == str(ui.MAX_SEARCH_RESULTS), "...and at most 100 maps")
+    check(check_flag, "...pointed at the campaign folder when one is given")
+    check(refused("check", {"campaign": "relative/folder"}) and refused("check", {"campaign": os.path.join(lib, "nope")}),
+          "Check refuses a campaign that isn't a real full path")
 
     _, grid = ui.build_command("grid", lib, {})
     check("--force" not in grid, "Grids don't overwrite by default")
@@ -384,6 +412,38 @@ def test_real_buttons(server, lib, originals):
     check(all(os.path.exists(os.path.join(lib, rel)) for rel in originals), "...at its original place")
 
 
+def test_other_tools(server, lib, camp, originals):
+    print("\n[other tools] Sort and Grids work on any one folder; Check reads a campaign")
+    client = Client(server)
+    client.sign_in()
+    sub = os.path.join(lib, "sub")
+
+    # Grid detection on one sub-folder only, with nothing set as the library at all.
+    status, _ = client.json("POST", "/api/run", {"action": "grid", "lib": "", "options": {"folder": sub}})
+    job = client.wait_for_job()
+    check(status == 200 and job["status"] == "done", f"Grids runs on a folder named for it, with no library chosen ({job['status']})")
+    files = all_files(lib)
+    check("sub/inner.xml" in files and "top.xml" not in files, f"...and writes a sidecar only in that folder (got {files})")
+    check(all(read_bytes(os.path.join(lib, rel)) == b for rel, b in originals.items()), "...without touching any map")
+
+    for bad in ("sub", "", os.path.join(lib, "no_such_folder"), os.path.join(lib, "top.png")):
+        status, reply = client.json("POST", "/api/run", {"action": "grid", "lib": "", "options": {"folder": bad}})
+        check(status == 400, f"Grids refuses the folder {bad!r} (got {status})")
+    status, _ = client.json("POST", "/api/run", {"action": "sort", "lib": "", "options": {"folder": sub}})
+    check(status == 400 and "sub/moved" not in all_files(lib), f"Sort on a chosen folder still needs the tick box (got {status})")
+    status, s_ = client.json("GET", "/api/status?" + urllib.parse.urlencode({"lib": sub}))
+    check(status == 200 and s_["library"]["top_level_images"] == 1, "the sort box can ask about a sub-folder: 1 map directly inside it")
+
+    # Check: the read-only map-load report on a campaign.
+    status, _ = client.json("POST", "/api/run", {"action": "check", "options": {"campaign": camp, "top": 5}})
+    job = client.wait_for_job()
+    log = "\n".join(client.json("GET", "/api/job?since=0")[1]["lines"])
+    check(status == 200 and job["status"] == "done" and "FGU MAP LOAD REPORT" in log,
+          f"Check runs the map-load report on a campaign ({job['status']})")
+    status, _ = client.json("POST", "/api/run", {"action": "check", "options": {"campaign": os.path.join(lib, "nope")}})
+    check(status == 400, f"Check refuses a campaign folder that isn't there (got {status})")
+
+
 def main():
     test_static()
     test_commands()
@@ -398,8 +458,17 @@ def main():
             # The page's own process must write nothing: only the commands it starts may.
             lib = os.path.join(tmp, "real")
             originals = make_library(lib, {"red.png": (220, 30, 30), "green.png": (30, 170, 60), "blue.png": (30, 60, 220)})
+            tools_lib = os.path.join(tmp, "tools")
+            make_grid_png(os.path.join(tools_lib, "top.png"))
+            make_grid_png(os.path.join(tools_lib, "sub", "inner.png"))
+            tools_originals = {rel: read_bytes(os.path.join(tools_lib, *rel.split("/"))) for rel in all_files(tools_lib)}
+            campaign = os.path.join(tmp, "campaign")
+            os.makedirs(campaign)
+            with open(os.path.join(campaign, "db.xml"), "w") as f:
+                f.write('<root version="4.1"></root>')
             with WriteRecorder() as recorder:
                 test_real_buttons(server, lib, originals)
+                test_other_tools(server, tools_lib, campaign, tools_originals)
             check(recorder.touched == [], f"fgu_ui.py itself wrote nothing (wrote: {recorder.touched})")
     finally:
         server.shutdown()

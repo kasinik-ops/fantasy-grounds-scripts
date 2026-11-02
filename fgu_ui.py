@@ -8,12 +8,13 @@ button, which you press yourself).
     python3 fgu_ui.py [--library "/path/to/maps"] [--no-browser]
 
 From the page you can search the library by description, browse it a page at a
-time, sort maps into category folders (preview first, with an undo), detect grids,
-and build the index / download the AI model.
+time, sort maps into category folders (preview first, with an undo), detect grids on
+any folder, check a Fantasy Grounds campaign for maps that are heavy to display, and
+build the index / download the AI model.
 
 It is a thin runner: every action starts one of the existing scripts
-(fgu_classify_maps.py, fgu_detect_grid.py, fgu_find_maps.py) with the same flags
-you would type, and shows their output. So their safety rules apply unchanged:
+(fgu_classify_maps.py, fgu_detect_grid.py, fgu_find_maps.py, fgu_support_maptest.py)
+with the same flags you would type, and shows their output. So their safety rules apply unchanged:
 nothing is overwritten, sorting moves files only after you tick the confirmation
 box and always leaves an undo file, and this script itself writes no files at all.
 
@@ -211,6 +212,19 @@ def build_command(action, library, options):
                 raise ValueError("Tick the box to confirm that existing grid files may be overwritten.")
             cmd.append("--force")
         return "Detect grids", cmd
+    if action == "check":
+        try:
+            top = int(options.get("top", 25))
+        except (TypeError, ValueError):
+            top = 25
+        cmd = [py, script("fgu_support_maptest.py"), "--no-color", "--top", str(max(1, min(top, MAX_SEARCH_RESULTS)))]
+        campaign = str(options.get("campaign", "")).strip().strip('"')
+        if campaign:
+            is_campaign = os.path.isdir(campaign) or (os.path.basename(campaign) == "db.xml" and os.path.isfile(campaign))
+            if not os.path.isabs(campaign) or not is_campaign:
+                raise ValueError("Type the full path of a Fantasy Grounds campaign folder, or leave it blank to look in Fantasy Grounds' own data folder.")
+            cmd += ["--campaign", campaign]
+        return "Check campaign maps for heavy load", cmd
     if action == "download_model":
         return "Download the AI model", [py, "-c", DOWNLOAD_MODEL_CODE]
     raise ValueError("Unknown action.")
@@ -387,7 +401,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         index = read_index(library)
         if index is None:
             return self._send(200, {"indexed": False, "folders": [], "more": 0})
-        rows = sorted(({"name": name, "count": len(positions)} for name, positions in index["folders"].items()),
+        rows = sorted(({"name": name, "count": len(positions), "path": os.path.join(library, name) if name else library}
+                       for name, positions in index["folders"].items()),
                       key=lambda r: (-r["count"], r["name"].lower()))
         self._send(200, {"indexed": True, "folders": rows[:MAX_FOLDERS], "more": max(0, len(rows) - MAX_FOLDERS)})
 
@@ -472,8 +487,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         action = str(body.get("action", ""))
         options = body.get("options") if isinstance(body.get("options"), dict) else {}
         library = None
-        if action != "download_model":
+        if action in ("index", "search"):
             library = self._library({"lib": [str(body.get("lib", ""))]})
+        elif action in ("sort_preview", "sort", "undo", "grid"):
+            # These work on the folder named for them, which can be any folder, not only the library.
+            library = self._library({"lib": [str(options.get("folder") or body.get("lib", ""))]})
         title, argv = build_command(action, library, options)
         if not self.ctx.start_job(title, argv):
             return self._error(409, "Another job is still running. Wait for it, or press Stop.")
@@ -560,6 +578,7 @@ p { margin:6px 0; }
   <button class="tab" role="tab" data-tab="browse" aria-selected="false">Browse</button>
   <button class="tab" role="tab" data-tab="sort" aria-selected="false">Sort</button>
   <button class="tab" role="tab" data-tab="grid" aria-selected="false">Grids</button>
+  <button class="tab" role="tab" data-tab="check" aria-selected="false">Check</button>
   <button class="tab" role="tab" data-tab="setup" aria-selected="false">Setup</button>
 </div>
 
@@ -584,6 +603,8 @@ p { margin:6px 0; }
 
 <div class="panel" id="panel-sort" hidden>
   <p>Sorts maps into category folders (dungeon, ruin, tavern, ...). It only looks at maps sitting <strong>directly inside</strong> the folder, not in its sub-folders, so a library that is already sorted has little left to do.</p>
+  <div class="row"><label for="sort-folder">Folder to sort:</label>
+    <input type="text" id="sort-folder" list="folder-choices" placeholder="(the folder at the top)" style="flex:1 1 320px" autocomplete="off" spellcheck="false"></div>
   <p id="sort-count" class="muted"></p>
   <label class="check"><input type="checkbox" id="photos"> <span>Also tag pictures that look like photographs "not a map" (experimental).</span></label>
   <div class="row"><button id="preview" class="primary">Preview (moves nothing)</button><span class="muted">Writes a CSV report of what it would do into the folder.</span></div>
@@ -598,9 +619,20 @@ p { margin:6px 0; }
 
 <div class="panel" id="panel-grid" hidden>
   <p>Detects square grids and writes a Fantasy Grounds <code>.xml</code> file next to each map. This looks in the folder <strong>and its sub-folders</strong>, so on a big library it can take a long time and a lot of memory for very large maps. Maps that already have an <code>.xml</code> are skipped.</p>
+  <div class="row"><label for="grid-folder">Folder:</label>
+    <input type="text" id="grid-folder" list="folder-choices" placeholder="(the folder at the top)" style="flex:1 1 320px" autocomplete="off" spellcheck="false"></div>
+  <p class="muted">Leave it blank for the whole library, or pick or type one folder (any folder on this computer).</p>
   <div class="row"><button id="grid" class="primary">Detect grids</button></div>
   <label class="check"><input type="checkbox" id="force"> <span>Replace existing grid files too (other data in them is kept).</span></label>
   <label class="check"><input type="checkbox" id="confirm-grid"> <span>Yes, overwrite existing grid files. (Needed for the box above.)</span></label>
+</div>
+
+<div class="panel" id="panel-check" hidden>
+  <p>Ranks the maps in a Fantasy Grounds campaign by how heavy they are to display (picture size, lights and line-of-sight walls), worst first, so you know which to fix. It only <strong>reads</strong> the campaign's files.</p>
+  <div class="row"><input type="text" id="check-folder" placeholder="Campaign folder (optional), e.g. .../Fantasy Grounds/campaigns/My Campaign" style="flex:1 1 360px" autocomplete="off" spellcheck="false"></div>
+  <p class="muted">Leave it blank to look through the campaigns in Fantasy Grounds' own data folder.</p>
+  <div class="row"><select id="check-top"><option>10</option><option selected>25</option><option>50</option><option>100</option></select>
+    <span class="muted">worst maps</span><button id="checkrun" class="primary">Check maps</button></div>
 </div>
 
 <div class="panel" id="panel-setup" hidden>
@@ -611,6 +643,8 @@ p { margin:6px 0; }
   <p class="muted">Finding and browsing use an index of your library, kept in a hidden <code>.fgu_map_index</code> folder inside it. The first build reads every map once and can take a long time on a big library; after that only new maps are read. Searching also updates it by itself.</p>
   <div class="row"><button id="index" class="primary">Build / update the index</button></div>
 </div>
+
+<datalist id="folder-choices"></datalist>
 
 <div id="logbox">
   <div class="bar"><strong id="jobtitle" class="muted">Nothing running</strong><button id="stop" disabled>Stop</button></div>
@@ -637,7 +671,7 @@ const q = (params) => new URLSearchParams(params).toString();
 
 function setBusy(value) {
   busy = value;
-  for (const id of ["search", "preview", "sortnow", "undo", "grid", "download", "index"]) $(id).disabled = value;
+  for (const id of ["search", "preview", "sortnow", "undo", "grid", "download", "index", "checkrun"]) $(id).disabled = value;
   $("stop").disabled = !value;
 }
 
@@ -661,10 +695,39 @@ async function refreshStatus() {
   parts.push("model " + (s.model_ready ? "ready" : "not downloaded (see Setup)"));
   parts.push(l.top_level_images.toLocaleString() + " maps directly in this folder (what Sort looks at)");
   say(parts.join("  \u00b7  "), (l.indexed === null || !s.model_ready) ? "warn" : "muted");
-  $("sort-count").textContent = l.top_level_images.toLocaleString() + " map(s) are directly inside this folder.";
-  const sel = $("undo-file"); sel.textContent = "";
-  for (const name of l.undo_files) { const o = document.createElement("option"); o.textContent = name; sel.appendChild(o); }
-  if (!l.undo_files.length) { const o = document.createElement("option"); o.textContent = "(no undo files in this folder)"; sel.appendChild(o); }
+  fillFolderChoices(l.indexed !== null).catch(() => {});
+  refreshSortInfo().catch(() => {});
+}
+
+// The folder a tool should work on: what was typed in its own box, else the folder at the top.
+const folderOf = (id) => $(id).value.trim().replace(/^"|"$/g, "") || lib;
+
+async function refreshSortInfo() {
+  const folder = folderOf("sort-folder"), sel = $("undo-file");
+  sel.textContent = "";
+  let names = [], text = "";
+  if (folder) {
+    const s = await api("/api/status?" + q({ lib: folder }));
+    if (s.library) {
+      names = s.library.undo_files;
+      text = s.library.top_level_images.toLocaleString() + " map(s) are directly inside this folder.";
+    } else { text = s.error || "That folder was not found."; }
+  }
+  $("sort-count").textContent = text;
+  for (const name of names) { const o = document.createElement("option"); o.textContent = name; sel.appendChild(o); }
+  if (!names.length) { const o = document.createElement("option"); o.textContent = "(no undo files in this folder)"; sel.appendChild(o); }
+}
+
+// Offers the library's top-level folders (names and counts only) in the folder boxes.
+async function fillFolderChoices(indexed) {
+  const list = $("folder-choices"); list.textContent = "";
+  if (!indexed || !lib) return;
+  const f = await api("/api/folders?" + q({ lib }));
+  for (const row of f.folders) {
+    const o = document.createElement("option"); o.value = row.path;
+    o.label = (row.name || "(top level)") + " \u00b7 " + row.count.toLocaleString();
+    list.appendChild(o);
+  }
 }
 
 function card(item, withScore) {
@@ -754,10 +817,12 @@ $("check").addEventListener("click", async () => {
 $("lib").addEventListener("keydown", (e) => { if (e.key === "Enter") $("check").click(); });
 $("search").addEventListener("click", () => { wantResultsFor = $("query").value; run("search", { query: $("query").value, top: parseInt($("top").value, 10) }).then((ok) => { if (!ok) wantResultsFor = null; }); });
 $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") $("search").click(); });
-$("preview").addEventListener("click", () => run("sort_preview", { detect_photos: $("photos").checked }));
-$("sortnow").addEventListener("click", () => run("sort", { detect_photos: $("photos").checked, confirm: $("confirm-sort").checked }));
-$("undo").addEventListener("click", () => run("undo", { manifest: $("undo-file").value, confirm: $("confirm-undo").checked }));
-$("grid").addEventListener("click", () => run("grid", { force: $("force").checked, confirm: $("confirm-grid").checked }));
+$("preview").addEventListener("click", () => run("sort_preview", { folder: folderOf("sort-folder"), detect_photos: $("photos").checked }));
+$("sortnow").addEventListener("click", () => run("sort", { folder: folderOf("sort-folder"), detect_photos: $("photos").checked, confirm: $("confirm-sort").checked }));
+$("undo").addEventListener("click", () => run("undo", { folder: folderOf("sort-folder"), manifest: $("undo-file").value, confirm: $("confirm-undo").checked }));
+$("grid").addEventListener("click", () => run("grid", { folder: folderOf("grid-folder"), force: $("force").checked, confirm: $("confirm-grid").checked }));
+$("checkrun").addEventListener("click", () => run("check", { campaign: $("check-folder").value.trim(), top: parseInt($("check-top").value, 10) }));
+$("sort-folder").addEventListener("change", () => refreshSortInfo().catch(() => {}));
 $("download").addEventListener("click", () => run("download_model"));
 $("index").addEventListener("click", () => run("index"));
 $("stop").addEventListener("click", () => api("/api/stop", {}).catch(() => {}));
