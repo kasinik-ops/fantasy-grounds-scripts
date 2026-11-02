@@ -137,9 +137,26 @@ def scan_library(library):
     return found
 
 
+THUMB_NAME = re.compile(r"^[0-9a-f]{20}\.jpg$")
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+
+def is_safe_rel(rel):
+    """Is rel a plain relative path to an image, written with '/', that stays inside
+    whatever folder it is joined to? An index file is just data sitting in the library
+    folder, and one that came with a downloaded map pack could list '../something' or a
+    program; entries like that are never used."""
+    if not isinstance(rel, str) or not rel or not rel.lower().endswith(VALID_IMAGE_EXTS):
+        return False
+    if rel.startswith("/") or "\x00" in rel or _DRIVE_PREFIX.match(rel) or (os.sep == "\\" and "\\" in rel):
+        return False
+    return all(part and not part.startswith(".") for part in rel.split("/"))   # no '', '.', '..' or hidden parts
+
+
 def load_index(library):
     """{'paths','sizes','mtimes','thumbs','embeddings','failed'} from a previous run, or None.
-    'failed' is a set of (path, size, mtime) for files that could not be read."""
+    'failed' is a set of (path, size, mtime) for files that could not be read. Entries
+    whose path or thumbnail name isn't safe (see is_safe_rel) are dropped."""
     path = os.path.join(index_dir(library), INDEX_FILENAME)
     if not os.path.isfile(path):
         return None
@@ -147,12 +164,15 @@ def load_index(library):
         with np.load(path, allow_pickle=False) as data:
             if int(data["format"]) != INDEX_FORMAT or str(data["model_id"]) != MODEL_ID:
                 return None
+            paths, thumbs = [str(p) for p in data["paths"]], [str(t) for t in data["thumbs"]]
+            keep = [i for i in range(len(paths)) if is_safe_rel(paths[i]) and THUMB_NAME.match(thumbs[i])]
+            sizes, mtimes = [int(s) for s in data["sizes"]], [int(m) for m in data["mtimes"]]
             return {
-                "paths": [str(p) for p in data["paths"]],
-                "sizes": [int(s) for s in data["sizes"]],
-                "mtimes": [int(m) for m in data["mtimes"]],
-                "thumbs": [str(t) for t in data["thumbs"]],
-                "embeddings": data["embeddings"].astype(np.float32),
+                "paths": [paths[i] for i in keep],
+                "sizes": [sizes[i] for i in keep],
+                "mtimes": [mtimes[i] for i in keep],
+                "thumbs": [thumbs[i] for i in keep],
+                "embeddings": data["embeddings"].astype(np.float32)[keep],
                 # A file that failed under a different size ceiling is worth another try.
                 "failed": set(zip((str(p) for p in data["failed_paths"]),
                                   (int(s) for s in data["failed_sizes"]),

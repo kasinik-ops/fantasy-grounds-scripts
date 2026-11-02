@@ -61,6 +61,7 @@ MAX_LOG_LINES = 3000
 MAX_QUERY_LENGTH = 300
 
 THUMB_NAME = re.compile(r"^[0-9a-f]{20}\.jpg$")
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 MANIFEST_NAME = re.compile(r"^fgu_moves_\d{4}-\d{2}-\d{2}_\d{6}\.jsonl$")
 
 
@@ -68,6 +69,34 @@ MANIFEST_NAME = re.compile(r"^fgu_moves_\d{4}-\d{2}-\d{2}_\d{6}\.jsonl$")
 # Library, index and model state (read-only)
 # ---------------------------------------------------------------------------
 _index_cache = {}
+
+
+def is_safe_rel(rel):
+    """Is rel a plain relative path to an image, written with '/', that stays inside the
+    folder it is joined to? (The same rule as fgu_find_maps.is_safe_rel, which the tests
+    hold this copy to.) An index file is only data in the library folder, and one that
+    came with a downloaded map pack could list '../something' or a program."""
+    if not isinstance(rel, str) or not rel or not rel.lower().endswith(VALID_IMAGE_EXTS):
+        return False
+    if rel.startswith("/") or "\x00" in rel or _DRIVE_PREFIX.match(rel) or (os.sep == "\\" and "\\" in rel):
+        return False
+    return all(part and not part.startswith(".") for part in rel.split("/"))
+
+
+def safe_image_path(library, rel):
+    """The real path of a map in the library, or None unless it is a plain image path that,
+    after following any links, is an image file still inside the library."""
+    if not is_safe_rel(rel):
+        return None
+    real = os.path.realpath(os.path.join(library, *rel.split("/")))
+    root = os.path.realpath(library)
+    try:
+        inside = os.path.commonpath([root, real]) == root
+    except ValueError:                      # a different drive
+        return None
+    if not inside or not real.lower().endswith(VALID_IMAGE_EXTS) or not os.path.isfile(real):
+        return None
+    return real
 
 
 def read_index(library):
@@ -91,6 +120,9 @@ def read_index(library):
             thumbs = [str(t) for t in data["thumbs"]]
     except Exception:
         return None
+    # Drop anything unsafe: the index is only data in the library folder (see is_safe_rel).
+    kept = [i for i in range(len(paths)) if is_safe_rel(paths[i]) and THUMB_NAME.match(thumbs[i])]
+    paths, thumbs = [paths[i] for i in kept], [thumbs[i] for i in kept]
     folders = {}
     for position, rel in enumerate(paths):
         folders.setdefault(rel.split("/")[0] if "/" in rel else "", []).append(position)
@@ -182,8 +214,9 @@ def build_command(action, library, options):
         except (TypeError, ValueError):
             top = 24
         top = max(1, min(top, MAX_SEARCH_RESULTS))
-        return f"Search: {query}", [py, script("fgu_find_maps.py"), "search", "--dir", library, query,
-                                    "--top", str(top), "--no-page", "--json"]
+        # "--" ends the options, so a description that starts with "-" is still just text.
+        return f"Search: {query}", [py, script("fgu_find_maps.py"), "search", "--dir", library,
+                                    "--top", str(top), "--no-page", "--json", "--", query]
     if action == "sort_preview":
         stamp = time.strftime("%Y-%m-%d_%H%M%S")
         cmd = [py, script("fgu_classify_maps.py"), "--dir", library, "--no-move", "--no-update-check",
@@ -504,9 +537,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Only a map the index lists can be opened: the page can't be made to open an arbitrary file.
         if index is None or rel not in index["known"]:
             raise ValueError("That map isn't in the index.")
-        full = os.path.join(library, *rel.split("/"))
-        if not os.path.isfile(full):
-            raise ValueError("That map is no longer there. Update the index.")
+        full = safe_image_path(library, rel)
+        if full is None:
+            raise ValueError("That map is no longer there, or isn't a plain image inside the library. Update the index.")
         open_with_default_app(full)
         self._send(200, {"ok": True})
 
@@ -615,7 +648,7 @@ p { margin:6px 0; }
   <div class="row"><button id="sortnow">Sort the maps</button></div>
   <h2 style="margin-top:18px">Undo a sort</h2>
   <div class="row"><select id="undo-file"></select></div>
-  <label class="check"><input type="checkbox" id="confirm-undo"> <span>Yes, put those maps back where they were. Nothing is overwritten and no folders are removed.</span></label>
+  <label class="check"><input type="checkbox" id="confirm-undo"> <span>Yes, put those maps back where they were. Nothing is overwritten and no folders are removed. (Only undo files made by this installation are used; one from anywhere else is refused.)</span></label>
   <div class="row"><button id="undo">Undo</button></div>
 </div>
 

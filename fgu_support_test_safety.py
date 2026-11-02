@@ -181,6 +181,10 @@ IGNORE_WRITE_ROOTS = [
     # stray write elsewhere in the temp folder.
     os.path.realpath(os.path.join(tempfile.gettempdir(), "torchinductor_" + getpass.getuser())),
 ]
+IGNORE_WRITE_ROOTS.append(
+    # The classifier's own application state, kept in this installation's venv folder and
+    # never next to the maps: the model-update stamp and the key that signs undo files.
+    os.path.realpath(os.path.join(REPO_ROOT, "venv")))
 IGNORE_WRITE_BASENAMES = {
     # A one-time JIT scaffold file torch.distributed writes into its own
     # fresh tempfile.mkdtemp() directory the first time a certain torch
@@ -287,7 +291,7 @@ class WriteRecorder:
         return [p for p in self.touched if not is_allowed(p)]
 
 
-def run_in_process(script, script_args, allowed_roots, stdin_text=""):
+def run_in_process(script, script_args, allowed_roots, stdin_text="", expect_exit=(0, None)):
     """Runs one of the real scripts in-process -- same argv, same __main__
     entry point as `python script.py <args>` from the command line -- with
     every write-capable call intercepted. Asserts every write stayed inside
@@ -304,7 +308,7 @@ def run_in_process(script, script_args, allowed_roots, stdin_text=""):
             try:
                 runpy.run_path(script_path, run_name="__main__")
             except SystemExit as e:
-                check(e.code in (0, None), f"{script} exited cleanly (code={e.code!r})")
+                check(e.code in expect_exit, f"{script} exited as expected (code={e.code!r})")
     except Exception as e:
         check(False, f"{script} raised an unexpected exception: {e!r}")
     finally:
@@ -529,6 +533,105 @@ def test_classify_report_is_written_and_never_overwrites():
               f"the second report went to the next free name, found {all_files(tmp)}")
 
 
+def _forged_manifest(tmp):
+    """A pack with a payload file and an undo file asking to move it somewhere else entirely.
+    Returns (manifest path, payload path, the attacker-chosen destination)."""
+    import json
+    pack = os.path.join(tmp, "map_pack")
+    os.makedirs(pack)
+    payload = os.path.join(pack, "payload.txt")
+    with open(payload, "w") as f:
+        f.write("shipped in the pack")
+    target = os.path.join(tmp, "somewhere_else", "LaunchAgents", "evil.plist")
+    manifest = os.path.join(pack, "fgu_moves_2026-01-01_000000.jsonl")
+    with open(manifest, "w") as f:
+        f.write(json.dumps({"from": target, "to": payload, "sidecar": False}) + "\n")
+    return manifest, payload, target
+
+
+def test_classify_undo_refuses_forged_manifests():
+    print("\n[fgu_classify_maps.py] --undo only trusts undo files this installation signed")
+    import json
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest, payload, target = _forged_manifest(tmp)
+        before = read_bytes(manifest)
+        run_in_process("fgu_classify_maps.py", ["--undo", manifest, "-y"], allowed_roots=[tmp], expect_exit=(1,))
+        check(os.path.exists(payload) and not os.path.exists(target), "an unsigned undo file moves nothing")
+        check(read_bytes(manifest) == before, "...and is left untouched")
+
+        run_in_process("fgu_classify_maps.py", ["--undo", manifest, "--trust-manifest", "-y"], allowed_roots=[tmp], expect_exit=(1,))
+        check(os.path.exists(payload) and not os.path.exists(target), "--trust-manifest can't be combined with -y: still nothing moves")
+        run_in_process("fgu_classify_maps.py", ["--undo", manifest, "--trust-manifest"], allowed_roots=[tmp], stdin_text="n\n")
+        check(os.path.exists(payload) and not os.path.exists(target), "--trust-manifest answered 'no' moves nothing")
+        run_in_process("fgu_classify_maps.py", ["--undo", manifest, "--trust-manifest"], allowed_roots=[tmp, os.path.dirname(target)],
+                       stdin_text="y\n")
+        check(os.path.exists(target) and not os.path.exists(payload), "--trust-manifest, read and confirmed by the user, does work")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        image_bytes, sidecar_bytes, real = _move_one_map_with_sidecar(tmp)
+        records = [json.loads(line) for line in open(real, encoding="utf-8")]
+        check(all("sig" in r for r in records), "every record of a real undo file is signed")
+        moved = [f for f in all_files(tmp) if f.endswith(".png") and "/" in f]
+        check(len(moved) == 1, "the real sort moved the map into a category folder")
+
+        tampered = os.path.join(tmp, "fgu_moves_2026-02-02_000000.jsonl")
+        with open(tampered, "w", encoding="utf-8") as f:
+            for r in records:
+                f.write(json.dumps(dict(r, **{"from": os.path.join(tmp, "elsewhere", "x.png")})) + "\n")
+        run_in_process("fgu_classify_maps.py", ["--undo", tampered, "-y"], allowed_roots=[tmp], expect_exit=(1,))
+        check(not os.path.exists(os.path.join(tmp, "elsewhere")) and os.path.exists(os.path.join(tmp, *moved[0].split("/"))),
+              "a signed record with its destination changed is refused")
+
+        stripped = os.path.join(tmp, "fgu_moves_2026-03-03_000000.jsonl")
+        with open(stripped, "w", encoding="utf-8") as f:
+            for r in records:
+                r = dict(r)
+                r.pop("sig")
+                f.write(json.dumps(r) + "\n")
+        run_in_process("fgu_classify_maps.py", ["--undo", stripped, "-y"], allowed_roots=[tmp], expect_exit=(1,))
+        check(os.path.exists(os.path.join(tmp, *moved[0].split("/"))), "the same records with the signatures removed are refused")
+
+        garbage = os.path.join(tmp, "fgu_moves_2026-04-04_000000.jsonl")
+        with open(garbage, "w") as f:
+            f.write('{"from": 5}\n["not", "a", "record"]\n')
+        run_in_process("fgu_classify_maps.py", ["--undo", garbage, "-y"], allowed_roots=[tmp], expect_exit=(1,))
+        check(True, "a malformed undo file is refused cleanly rather than crashing")
+
+        run_in_process("fgu_classify_maps.py", ["--undo", real, "-y"], allowed_roots=[tmp])
+        check(os.path.exists(os.path.join(tmp, "map.png")), "the genuine undo file still works")
+    sys.path.insert(0, REPO_ROOT)
+    key_path = os.path.join(REPO_ROOT, "venv", ".manifest_key")
+    check(os.path.isfile(key_path) and len(read_bytes(key_path)) == 32, "the signing key exists in this installation's venv folder")
+    if os.name == "posix":
+        check(os.stat(key_path).st_mode & 0o077 == 0, "...and only its owner can read it")
+
+
+def test_find_maps_ignores_unsafe_index_entries():
+    print("\n[fgu_find_maps.py] an index that came with a download can't point outside the library")
+    import importlib
+    sys.path.insert(0, REPO_ROOT)
+    sys.argv = ["fgu_find_maps.py"]
+    sys.modules.pop("fgu_find_maps", None)
+    m = importlib.import_module("fgu_find_maps")
+    good_thumb = "0123456789abcdef0123.jpg"
+    z = np.zeros(8, np.float32)
+    bad_paths = ["../outside.png", "sub/../../outside.png", "/etc/passwd.png", "C:/Windows/x.png", ".hidden/x.png", "payload.bat",
+                 "run.exe", "sub//x.png", "", "x.png\x00.png"]
+    with tempfile.TemporaryDirectory() as tmp:
+        entries = [("ok/a.png", 1, 1, good_thumb, z), ("b.JPG", 1, 1, good_thumb, z)]
+        entries += [(p, 1, 1, good_thumb, z) for p in bad_paths]
+        entries += [("evil_thumb.png", 1, 1, "../../evil.jpg", z), ("short_thumb.png", 1, 1, "abc.jpg", z)]
+        m.save_index(tmp, entries)
+        loaded = m.load_index(tmp)
+        check(loaded["paths"] == ["b.JPG", "ok/a.png"] or sorted(loaded["paths"]) == ["b.JPG", "ok/a.png"],
+              f"only the two safe entries are loaded (got {loaded['paths']})")
+        check(len(loaded["embeddings"]) == len(loaded["paths"]) == len(loaded["sizes"]) == len(loaded["thumbs"]),
+              "...and every column still lines up")
+    check(m.is_safe_rel("a/b.png") and m.is_safe_rel("Maps/Cave 2.JPEG") and m.is_safe_rel("Dungeon: Level 2.png"),
+          "ordinary names, including spaces, capitals and a colon later in the name, are accepted")
+    check(not m.is_safe_rel("C:evil.png"), "a name that starts like a Windows drive is not")
+
+
 # ---------------------------------------------------------------------------
 # fgu_find_maps.py
 # ---------------------------------------------------------------------------
@@ -742,9 +845,11 @@ def main():
     test_classify_undo_restores_everything_byte_for_byte()
     test_classify_undo_never_overwrites()
     test_classify_undo_declines_without_confirmation()
+    test_classify_undo_refuses_forged_manifests()
     test_classify_report_is_written_and_never_overwrites()
     test_find_maps_writes_only_its_cache_and_never_touches_maps()
     test_find_maps_picks_up_changes_and_never_overwrites_a_page()
+    test_find_maps_ignores_unsafe_index_entries()
     test_find_maps_sheet_is_split_into_small_pages()
     test_detect_grid_only_creates_the_sidecar()
     test_detect_grid_skips_existing_sidecar_without_force()

@@ -15,6 +15,10 @@ open files:
     the confirmation box; a search description can't become part of a shell command)
   - that Sort and Grids can be pointed at any one folder (not just the library), and
     that the Check tool runs the read-only map-load report on a campaign
+  - that it only ever listens on this machine (a connection to the computer's network
+    address is refused), that a hostile index or undo file from a downloaded map pack
+    can't make it open or move anything outside the library, and that a search
+    description that looks like an option is still just text
   - that it writes nothing itself, and that the real Index, Search, Sort-preview,
     Sort and Undo buttons work end to end and leave files exactly as they should be
 
@@ -28,6 +32,7 @@ import http.client
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import threading
@@ -292,6 +297,9 @@ def test_commands():
     nasty = 'x"; rm -rf ~; echo "'
     _, argv = ui.build_command("search", lib, {"query": nasty})
     check(argv.count(nasty) == 1 and all(isinstance(a, str) for a in argv), "a search description stays one argument, never part of a command line")
+    _, flaglike = ui.build_command("search", lib, {"query": "--open"})
+    check(flaglike[-2:] == ["--", "--open"] and flaglike.index("--") > flaglike.index("--json"),
+          "a description that looks like an option comes after '--', so it is only ever text")
     check(refused("search", {"query": "   "}) and refused("search", {"query": "x" * 1000}), "an empty or huge description is refused")
     check(refused("rm -rf", {}), "an unknown action is refused")
 
@@ -325,7 +333,7 @@ def test_thumbs_and_open(server, tmp):
     ui.open_with_default_app = opened.append
     try:
         status, _ = client.json("POST", "/api/open", {"lib": lib, "rel": "a.png"})
-        check(status == 200 and opened == [os.path.join(lib, "a.png")], "an indexed map is opened with the computer's default app")
+        check(status == 200 and opened == [os.path.realpath(os.path.join(lib, "a.png"))], "an indexed map is opened with the computer's default app")
         for bad in ("../secret.txt", "..\\secret.txt", "../files/a.png", "/etc/hosts", "not_in_index.png", "ghost.png"):
             before = len(opened)
             status, _ = client.json("POST", "/api/open", {"lib": lib, "rel": bad})
@@ -379,6 +387,11 @@ def test_real_buttons(server, lib, originals):
     check(job["status"] == "done" and len(results) == 2, f"Search returns the 2 results asked for ({len(results)})")
     check(results and results[0]["rel"] == "red.png" and {"rel", "thumb", "score"} <= set(results[0]), "...best first, with the fields the page shows")
     check(not [f for f in all_files(lib) if f.endswith(".html")], "...and wrote no picture page")
+
+    status, _ = client.json("POST", "/api/run", {"action": "search", "lib": lib, "options": {"query": "--open a solid blue image", "top": 1}})
+    job = client.wait_for_job()
+    check(job["status"] == "done" and len(job.get("results") or []) == 1,
+          f"a description that starts with '--' still searches ({job['status']})")
 
     # Sort preview: moves nothing, writes a report.
     status, _ = client.json("POST", "/api/run", {"action": "sort_preview", "lib": lib, "options": {}})
@@ -444,14 +457,107 @@ def test_other_tools(server, lib, camp, originals):
     check(status == 400, f"Check refuses a campaign folder that isn't there (got {status})")
 
 
+def test_path_rules_agree():
+    print("\n[paths] the window and the finder reject the same unsafe index entries")
+    cases = ["a.png", "sub/b.JPG", "Maps/Cave 2.jpeg", "Dungeon: Level 2.webp", "x.heic",
+             "../a.png", "sub/../../a.png", "sub/./a.png", "/etc/a.png", "C:/a.png", "C:a.png", ".hidden/a.png",
+             "sub/.a.png", "a.bat", "a.png.exe", "a", "", "sub//a.png", "a\\b.png", "a\x00.png", "sub/", None, 5]
+    disagree = [c for c in cases if ui.is_safe_rel(c) != fgu_find_maps.is_safe_rel(c)]
+    check(not disagree, f"both give the same answer for {len(cases)} cases (differences: {disagree})")
+    unsafe = [c for c in cases[5:] if c not in ("a\\b.png",)]
+    check(not any(ui.is_safe_rel(c) for c in unsafe), "...and none of the unsafe ones is accepted")
+    check(all(ui.is_safe_rel(c) for c in cases[:5]), "...while ordinary names are")
+
+
+def test_hostile_index(server, tmp):
+    print("\n[hostile index] an index that came with a downloaded pack can't open anything outside the library")
+    lib = os.path.join(tmp, "pack")
+    os.makedirs(os.path.join(lib, "sub"))
+    outside = os.path.join(tmp, "outside.png")
+    Image.new("RGB", (8, 8), (9, 9, 9)).save(outside)
+    Image.new("RGB", (8, 8), (1, 1, 1)).save(os.path.join(lib, "real.png"))
+    with open(os.path.join(lib, "payload.bat"), "w") as f:
+        f.write("echo hi")
+    linked = []
+    for name, target in (("link_out.png", outside), ("link_to_bat.png", os.path.join(lib, "payload.bat"))):
+        try:
+            os.symlink(target, os.path.join(lib, name))
+            linked.append(name)
+        except (OSError, NotImplementedError):
+            pass                                            # no permission to make links on this machine
+    z = np.zeros(8, np.float32)
+    names = ["real.png", "../outside.png", "payload.bat", "sub/../../outside.png", "/etc/hosts.png"] + linked
+    fgu_find_maps.save_index(lib, [(n, 1, 1, f"{i:020x}.jpg", z) for i, n in enumerate(names)])
+
+    client = Client(server)
+    client.sign_in()
+    opened = []
+    real_open = ui.open_with_default_app
+    ui.open_with_default_app = opened.append
+    try:
+        status, _ = client.json("POST", "/api/open", {"lib": lib, "rel": "real.png"})
+        check(status == 200 and opened == [os.path.realpath(os.path.join(lib, "real.png"))], "the one genuine image can be opened")
+        for bad in names[1:]:
+            before = len(opened)
+            status, _ = client.json("POST", "/api/open", {"lib": lib, "rel": bad})
+            check(status == 400 and len(opened) == before, f"a hostile index entry {bad!r} can't be opened (got {status})")
+    finally:
+        ui.open_with_default_app = real_open
+    status, f = client.json("GET", "/api/folders?" + urllib.parse.urlencode({"lib": lib}))
+    status, page = client.json("GET", "/api/browse?" + urllib.parse.urlencode({"lib": lib, "folder": ""}))
+    listed = [item["rel"] for item in page["items"]]
+    check(listed == ["real.png"] or sorted(listed) == sorted(["real.png"] + linked),
+          f"browsing shows only the entries that passed the rules (showed {listed})")
+    check(not any(r.startswith(("..", "/")) or r.endswith(".bat") for r in listed), "...none of them outside the library or a program")
+
+
+def test_forged_undo_through_the_window(server, lib, manifest, payload):
+    print("\n[forged undo] the Undo button won't use an undo file this installation didn't sign")
+    client = Client(server)
+    client.sign_in()
+    name = os.path.basename(manifest)
+    status, _ = client.json("POST", "/api/run", {"action": "undo", "lib": "", "options": {"folder": lib, "manifest": name, "confirm": True}})
+    job = client.wait_for_job()
+    log = "\n".join(client.json("GET", "/api/job?since=0")[1]["lines"])
+    check(status == 200 and job["status"] == "failed", f"the job is reported as failed ({job['status']})")
+    check("NOT used" in log, "...and the log says why")
+    check(os.path.exists(payload), "...and nothing was moved")
+
+
+def test_localhost_only(server):
+    print("\n[network] the window answers only on this computer")
+    check(server.server_address[0] == "127.0.0.1", f"it is bound to 127.0.0.1 only (bound to {server.server_address[0]})")
+    port = server.ctx.port
+    ip = None
+    try:                                                    # the address other computers would use; sends nothing
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect(("10.255.255.255", 1))
+        ip = probe.getsockname()[0]
+        probe.close()
+    except OSError:
+        pass
+    if not ip or ip.startswith("127."):
+        print("  skip - this computer has no network address other than localhost to try")
+        return
+    try:
+        socket.create_connection((ip, port), timeout=3).close()
+        reached = True
+    except OSError:
+        reached = False
+    check(not reached, f"a connection to this computer's network address ({ip}:{port}) is refused")
+
+
 def main():
     test_static()
+    test_path_rules_agree()
     test_commands()
     server = ui.make_server(0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         with tempfile.TemporaryDirectory() as tmp:
             test_access_rules(server)
+            test_localhost_only(server)
+            test_hostile_index(server, tmp)
             test_big_library_is_never_listed(server, tmp)
             test_thumbs_and_open(server, tmp)
             test_jobs(server)
@@ -462,6 +568,13 @@ def main():
             make_grid_png(os.path.join(tools_lib, "top.png"))
             make_grid_png(os.path.join(tools_lib, "sub", "inner.png"))
             tools_originals = {rel: read_bytes(os.path.join(tools_lib, *rel.split("/"))) for rel in all_files(tools_lib)}
+            forged_payload = os.path.join(tools_lib, "payload.txt")
+            forged_manifest = os.path.join(tools_lib, "fgu_moves_2026-01-01_000000.jsonl")
+            with open(forged_payload, "w") as f:
+                f.write("shipped in a pack")
+            with open(forged_manifest, "w") as f:
+                f.write(json.dumps({"from": os.path.join(tmp, "elsewhere", "evil.plist"), "to": forged_payload, "sidecar": False}) + "\n")
+            tools_originals = {rel: read_bytes(os.path.join(tools_lib, *rel.split("/"))) for rel in all_files(tools_lib)}
             campaign = os.path.join(tmp, "campaign")
             os.makedirs(campaign)
             with open(os.path.join(campaign, "db.xml"), "w") as f:
@@ -469,6 +582,7 @@ def main():
             with WriteRecorder() as recorder:
                 test_real_buttons(server, lib, originals)
                 test_other_tools(server, tools_lib, campaign, tools_originals)
+                test_forged_undo_through_the_window(server, tools_lib, forged_manifest, forged_payload)
             check(recorder.touched == [], f"fgu_ui.py itself wrote nothing (wrote: {recorder.touched})")
     finally:
         server.shutdown()

@@ -1,6 +1,9 @@
 import os
 import sys
 import csv
+import hmac
+import hashlib
+import secrets
 import argparse
 import subprocess
 import shutil
@@ -64,6 +67,10 @@ parser.add_argument("--report", type=str, default=None, metavar="FILE.csv",
                           "with --no-move this is a dry run: you can review the tags before "
                           "anything moves. An existing file is never overwritten; the next free "
                           "name is used instead.")
+parser.add_argument("--trust-manifest", action="store_true",
+                     help="With --undo: also accept an undo file that was NOT made by this installation "
+                          "(for example one you made on another computer). It shows every move and always "
+                          "asks first; it can't be combined with -y.")
 parser.add_argument("--detect-photos", action="store_true",
                      help="Experimental: also flag images that look like photographs rather than "
                           "map art, and tag them 'not a map'. Off by default; check a --report "
@@ -361,21 +368,67 @@ class _Report:
     def close(self):
         self._file.close()
 
+# An undo file says "move this file from here to there", so a forged one (say, shipped
+# inside a downloaded map pack) could be used to move any file anywhere. Every record is
+# therefore signed with a random key that lives in this installation's venv folder, never
+# next to the maps, and --undo only trusts records it can verify.
+MANIFEST_KEY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", ".manifest_key")
+
+def _manifest_key(create=False):
+    """The 32-byte signing key, or None if there isn't one (and create is False) or it
+    can't be written."""
+    try:
+        with open(MANIFEST_KEY_PATH, "rb") as f:
+            key = f.read()
+        if len(key) == 32:
+            return key
+    except OSError:
+        pass
+    if not create:
+        return None
+    try:
+        os.makedirs(os.path.dirname(MANIFEST_KEY_PATH), exist_ok=True)
+        key = secrets.token_bytes(32)
+        with open(MANIFEST_KEY_PATH, "xb", opener=lambda path, flags: os.open(path, flags, 0o600)) as f:
+            f.write(key)
+        return key
+    except FileExistsError:
+        return _manifest_key(create=False)
+    except OSError:
+        return None
+
+def _record_signature(key, record):
+    message = json.dumps([record["from"], record["to"], bool(record.get("sidecar", False))]).encode("utf-8")
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+def _record_is_authentic(key, record):
+    signature = record.get("sig")
+    return isinstance(signature, str) and hmac.compare_digest(signature, _record_signature(key, record))
+
+
 class _MoveManifest:
     """A JSON-lines record of every file moved this run (and whether its .xml
     sidecar went with it), written as each move happens, so --undo can reverse
-    them. Only created once the first file actually moves."""
+    them. Only created once the first file actually moves. Each line is signed
+    (see _manifest_key) so a record from anywhere else is not trusted."""
 
     def __init__(self, move_root):
         self.path = _unique_path(os.path.join(os.path.abspath(move_root), time.strftime("fgu_moves_%Y-%m-%d_%H%M%S.jsonl")))
         self._file = None
+        self._key = None
         self.count = 0
 
     def add(self, old_path, new_path, had_sidecar):
         if self._file is None:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             self._file = open(self.path, "a", encoding="utf-8")
+            self._key = _manifest_key(create=True)
+            if self._key is None:
+                print("⚠️  Could not create the key that signs the undo file, so --undo will not trust it "
+                      "(you would have to use --trust-manifest).")
         record = {"from": os.path.abspath(old_path), "to": os.path.abspath(new_path), "sidecar": bool(had_sidecar)}
+        if self._key is not None:
+            record["sig"] = _record_signature(self._key, record)
         self._file.write(json.dumps(record) + "\n")
         self._file.flush()
         self.count += 1
@@ -508,16 +561,37 @@ def run_classification(image_paths, is_apple_photos=False, unclassified_threshol
     return updated_paths
 
 
-def undo_moves(manifest_path, assume_yes=False):
+def undo_moves(manifest_path, assume_yes=False, trust_manifest=False):
     """Move every file listed in a move manifest back to where it came from. Only
     moves: it never overwrites a file (an occupied original location is skipped and
-    reported), never deletes anything, and leaves emptied category folders alone."""
+    reported), never deletes anything, and leaves emptied category folders alone.
+    Only records signed by this installation are used (see _manifest_key), unless
+    trust_manifest is set, which shows every move and always asks first. Returns False
+    if it refused or could not read the file, True otherwise (including "declined")."""
     try:
         with open(manifest_path, encoding="utf-8") as f:
             entries = [json.loads(line) for line in f if line.strip()]
+        if not all(isinstance(e, dict) and isinstance(e.get("from"), str) and isinstance(e.get("to"), str) for e in entries):
+            raise ValueError("a line is not a move record")
     except (OSError, ValueError) as e:
         print(f"❌ Could not read the manifest {manifest_path}: {e}")
-        return
+        return False
+
+    key = _manifest_key(create=False)
+    authentic = key is not None and all(_record_is_authentic(key, e) for e in entries)
+    if not authentic:
+        if not trust_manifest:
+            print("❌ This undo file was not made by this installation (its records are unsigned or "
+                  "don't match), so it was NOT used: a forged undo file could move any file on this "
+                  "computer.\n   If you made it yourself, for example on another computer, run again "
+                  "with --trust-manifest; that shows every move and asks first.")
+            return False
+        if assume_yes:
+            print("❌ --trust-manifest needs you to read the moves and confirm them yourself, so it can't "
+                  "be combined with -y.")
+            return False
+        print("⚠️  Using an undo file this installation did not make. Read the moves below carefully.")
+        assume_yes = False
 
     plan, skipped = [], []
     for entry in reversed(entries):          # newest move first
@@ -534,8 +608,12 @@ def undo_moves(manifest_path, assume_yes=False):
         print(f"    skipping {now_at}\n      because {reason}")
     if len(skipped) > 10:
         print(f"    ... and {len(skipped) - 10} more")
+    for now_at, original, _ in plan[:20]:
+        print(f"    {now_at}\n      -> {original}")
+    if len(plan) > 20:
+        print(f"    ... and {len(plan) - 20} more")
     if not plan:
-        return
+        return True
 
     if not assume_yes:
         try:
@@ -544,7 +622,7 @@ def undo_moves(manifest_path, assume_yes=False):
             confirm = ""
         if confirm != "y":
             print("Nothing was moved.")
-            return
+            return True
 
     restored = 0
     for now_at, original, had_sidecar in plan:
@@ -558,6 +636,7 @@ def undo_moves(manifest_path, assume_yes=False):
         except Exception as e:
             print(f"    ❌ could not move {now_at} back: {e}")
     print(f"✅ Moved {restored} file(s) back. Any category folders left empty were not removed.")
+    return True
 
 
 def _scan_local_dir(folder):
@@ -590,8 +669,7 @@ def _scan_album(album_name):
 
 def main():
     if args.undo:
-        undo_moves(args.undo, args.yes)
-        return
+        sys.exit(0 if undo_moves(args.undo, args.yes, args.trust_manifest) else 1)
     if args.batch_size < 1:
         print("❌ --batch-size must be at least 1.")
         return

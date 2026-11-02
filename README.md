@@ -43,7 +43,7 @@ Type the full path of your maps folder at the top (it remembers the last one) an
 
 - **Find**: describe a map and see the best matches as thumbnails. Choose how many (12, 24, 48 or 100). **Open map** opens the real file in your computer's normal viewer.
 - **Browse**: pick a folder from the list (names and counts) and page through it, 48 maps at a time.
-- **Sort**: the classifier. **Preview** moves nothing and writes a CSV report into the folder. **Sort the maps** moves them into category folders inside that folder, and only if you tick the confirmation box; it always saves an undo file. **Undo** puts a previous sort back, again only with the box ticked. Like the classifier itself, this looks only at maps directly inside the folder, not its sub-folders. It works on the folder in its own **Folder to sort** box, which defaults to the folder at the top.
+- **Sort**: the classifier. **Preview** moves nothing and writes a CSV report into the folder. **Sort the maps** moves them into category folders inside that folder, and only if you tick the confirmation box; it always saves an undo file. **Undo** puts a previous sort back, again only with the box ticked, and only from an undo file this installation made. Like the classifier itself, this looks only at maps directly inside the folder, not its sub-folders. It works on the folder in its own **Folder to sort** box, which defaults to the folder at the top.
 - **Grids**: the grid detector, which looks at a folder and its sub-folders. The **Folder** box defaults to the folder at the top (the whole library); pick one of your library's folders from its drop-down, or type the path of any folder on the computer, to run it on just that one. Maps that already have an `.xml` are skipped unless you tick both boxes to replace them.
 - **Check**: the map-load report from `fgu_support_maptest.py`. Point it at a Fantasy Grounds campaign folder (or leave it blank to look through the campaigns in Fantasy Grounds' own data folder) and it ranks the campaign's maps by how heavy they are to display, worst first, showing 10 to 100 of them. It only reads the campaign's files.
 - **Setup**: **Update AI model cache** (marked "Requires internet access": it is the one button that goes online, and only when you press it; it downloads the model (about 600 MB) the first time and checks for newer files after that; if the model has been updated, Hugging Face keeps the older copy in its cache, so the cache can grow to about twice that until you delete the old one) and build or update the index.
@@ -52,7 +52,7 @@ Whatever you start runs the existing script with the same flags you would type, 
 
 It deliberately never shows the whole library at once. Browsing is 48 maps per page, a search shows at most 100, the folder list is capped at 500 names (with a count of any more), the status line shows counts rather than lists, and the log keeps the last 3,000 lines. Only maps that are in the index can be browsed, found or opened, so the first thing to do with a new library is **Setup, then Build / update the index**. That first build reads every map once and can take a long time on a big library, but you can leave it running, and a re-run carries on where it stopped.
 
-Who can use it: only your own computer. It listens on `127.0.0.1` and ignores requests addressed any other way, and it needs the random one-time address it prints (the browser keeps it in a cookie), so other web pages you have open can't drive it. There is no password because nothing is reachable from outside your machine.
+Who can use it (see **Security notes**): only your own computer. It listens on `127.0.0.1` and ignores requests addressed any other way, and it needs the random one-time address it prints (the browser keeps it in a cookie), so other web pages you have open can't drive it. There is no password because nothing is reachable from outside your machine.
 
 Limits: you type or paste the folder path (there is no folder-picker button), the page needs a normal web browser, and it has not been tried on screens smaller than a laptop.
 
@@ -72,7 +72,7 @@ The maps are then MOVED into category-named subfolders.  Apple Photos images are
 
 It only scans files sitting directly in the selected folder, not subdirectories so re-running it won't re-classify maps a previous run already sorted into category subfolders.
 
-*Undoing a sort.* Every run that moves files writes a record of what it moved (`fgu_moves_<date>_<time>.jsonl`) in the destination folder. To put everything back where it was, including the `.xml` sidecars: `python fgu_classify_maps.py --undo "<that file>"`. It shows what it will do and asks first, never overwrites a file that has since appeared at the original place (it leaves that map where it is and says so), and never removes a folder, so category folders it empties stay. Apple Photos exports are copies and aren't covered; the originals were never moved.
+*Undoing a sort.* Every run that moves files writes a record of what it moved (`fgu_moves_<date>_<time>.jsonl`) in the destination folder. To put everything back where it was, including the `.xml` sidecars: `python fgu_classify_maps.py --undo "<that file>"`. It shows what it will do and asks first, never overwrites a file that has since appeared at the original place (it leaves that map where it is and says so), and never removes a folder, so category folders it empties stay. Apple Photos exports are copies and aren't covered; the originals were never moved. Every record is signed with a random key kept in this installation's `venv` folder (never next to the maps), and `--undo` only trusts records it can verify, because a forged undo file could otherwise move any file on your computer. An undo file from anywhere else, or one that has been edited, is refused with an explanation. If you made one yourself on another computer, `--undo FILE --trust-manifest` lists every move and asks you to confirm; it can't be combined with `-y`.
 
 *A report instead of guessing.* `--report results.csv` writes one row per map: its file, the tag, how confident the model was, and what happened to it. It works with `--no-move`, which makes a dry run you can read in a spreadsheet before deciding to move anything. It never overwrites a report that already exists; a second one is saved as `results (2).csv`.
 
@@ -97,7 +97,8 @@ It only scans files sitting directly in the selected folder, not subdirectories 
 | `--report FILE.csv` | | Write a CSV of every map's tag, confidence and outcome (never overwrites) |
 | `--detect-photos` | off | Tag images that look like photographs `not a map` (experimental) |
 | `--photo-threshold` | `80.0` | Confidence (%) needed before `--detect-photos` tags something `not a map` |
-| `--undo MANIFEST` | | Put back everything a previous run moved, using its `fgu_moves_*.jsonl` record |
+| `--undo MANIFEST` | | Put back everything a previous run moved, using its `fgu_moves_*.jsonl` record (only if this installation made it) |
+| `--trust-manifest` | off | With `--undo`: also accept an undo file made elsewhere; shows every move and always asks first (not with `-y`) |
 
 
 **fgu_find_maps.py**
@@ -206,6 +207,17 @@ To run a script directly instead, after the launcher has run once: `venv\Scripts
 
 Status: CI tests the setup and the scripts on a real Windows machine on every push: the first-run install, the fact that a second run does no setup, and the safety tests. The dialogs and the double-click `.bat` files are not tested, because CI can't click through them; they have only been reviewed by hand.
 
+
+**Security notes**
+
+These tools handle files you download (map packs often come with other people's folders and files), so they are written to treat anything inside a library folder as untrusted data. What has been checked, and by which test:
+
+- The map tools window (`fgu_ui.py`) is reachable only from your own computer: it listens on `127.0.0.1` only (a connection to the computer's network address is refused), ignores a request addressed to any other name even with a valid token, needs the one-time address printed in the terminal, and accepts changes only as same-origin JSON. Every action runs one of these scripts as an argument list, never through a shell. (`fgu_support_test_ui.py`)
+- An undo file is only trusted if this installation signed it (above), so a forged one in a downloaded folder can't move files around. (`fgu_support_test_safety.py`)
+- An index file (`.fgu_map_index/index.npz`) is just data in the library folder, so a hostile one can't make the tools open anything outside the library: entries that aren't plain relative paths to image files (`..`, absolute paths, drive letters, hidden folders, programs such as `.bat` or `.exe`) are dropped, and "Open map" also checks, after following any links, that the file is an image still inside the library. (`fgu_support_test_safety.py`, `fgu_support_test_ui.py`)
+- File names are always escaped or inserted as plain text in the pages and the window, and the index is read with pickle disabled.
+
+Not covered: the package versions are ranges, not hashes, so a compromised release inside a range would be installed at setup (the CI actions and the Windows setup tool are pinned); the AI model download is not pinned to a revision; Pillow and the image libraries parse the images you point the tools at, so keep them up to date; a very large image can use several GB of memory (the pixel ceiling is deliberate, see below); and another program running as you on the same computer can do anything you can.
 
 **Package versions**
 
