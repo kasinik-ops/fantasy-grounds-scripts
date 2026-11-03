@@ -1,4 +1,4 @@
-# Packages for fgu_classify_maps.py and fgu_find_maps.py. The Mac launcher, the
+# Packages for fgu_find_maps.py. The Mac launcher, the
 # Windows launcher (run_windows.ps1) and CI all install from this one file.
 #
 # Each line is a range, not an exact version: the lower bound is a version these

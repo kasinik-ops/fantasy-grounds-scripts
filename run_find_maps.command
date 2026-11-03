@@ -11,7 +11,7 @@ osa_escape() {
 }
 
 # 1. Explain what this does before touching anything, with a way to read more.
-INTRO_MSG=$'This tool finds battle maps by description (for example "tavern interior at night"), or shows your whole map library as a page of pictures you can click through. It looks at the pictures themselves, so it also finds maps hiding in folders like "unclassified".\n\nIt only READS your maps. It keeps a small index and thumbnails in a hidden folder called .fgu_map_index inside your maps folder, which is safe to delete at any time. The first time, it reads every map once, which can take a while for a big library; after that only new maps are read.\n\nIt needs the AI model the classifier downloads, and never goes online itself. If you have not run the map classifier yet, run run_classifier_map.command once first.\n\nThe results open as a page in your web browser. See the README for full details.'
+INTRO_MSG=$'This tool finds battle maps by description (for example "tavern interior at night"), or shows your whole map library as a page of pictures you can click through. It looks at the pictures themselves, so it also finds maps hiding in folders with unhelpful names.\n\nIt only READS your maps. It keeps a small index and thumbnails in a hidden folder called .fgu_map_index inside your maps folder, which is safe to delete at any time. The first time, it reads every map once, which can take a while for a big library; after that only new maps are read.\n\nIt needs an AI model (about 600 MB). If it is not on this computer yet, it is downloaded once, before the first search, and that is the only time this tool goes online.\n\nThe results open as a page in your web browser. See the README for full details.'
 
 while true; do
     INTRO_CHOICE=$(osascript -e "button returned of (display dialog \"$(osa_escape "$INTRO_MSG")\" buttons {\"Cancel\", \"Open README\", \"Continue\"} default button \"Continue\" with title \"RPG Map Finder\")")
@@ -49,7 +49,7 @@ else
     exit 0
 fi
 
-# 4. Environment Setup (the same packages as the classifier; osxphotos isn't needed here)
+# 4. Environment Setup
 if [ ! -d "venv" ]; then
     echo "📦 Creating first-time virtual environment..."
     python3 -m venv venv
@@ -58,10 +58,17 @@ fi
 source venv/bin/activate
 echo "🔄 Verifying dependencies..."
 # No --upgrade, so this makes no network request when nothing is missing.
-# The package ranges live in requirements-classify.txt (shared with the other
+# The package ranges live in requirements-find.txt (shared with the other
 # launchers and CI). --default-timeout keeps this from hanging if a package
 # genuinely does need to be fetched with no connection.
-pip install --quiet --default-timeout=10 -r requirements-classify.txt
+pip install --quiet --default-timeout=10 -r requirements-find.txt
+
+# 4b. The AI model. If it is not in the cache yet, fetch it now (the only time this tool
+# goes online); otherwise this makes no network request.
+if [ ! -d "${HF_HOME:-$HOME/.cache/huggingface}/hub/models--openai--clip-vit-base-patch32" ]; then
+    echo "⬇️  The AI model is not on this computer yet. Downloading it now (about 600 MB, needs internet, once only)..."
+    python fgu_find_maps.py download || { echo "❌ Downloading the AI model failed. Check the internet connection and try again."; exit 1; }
+fi
 
 # 5. Run Python script with GUI inputs passed as flags
 echo "🚀 Starting map finder..."

@@ -47,10 +47,9 @@ jobs:
         with:
           python-version: "3.12"
       # The same requirements files the launchers install from, so the version ranges
-      # users get are the ranges CI tests. (osxphotos, Mac-only and used only for
-      # --album, is not installed here.)
+      # users get are the ranges CI tests.
       - name: Install the packages the Mac launchers install
-        run: python -m pip install -r requirements-classify.txt -r requirements-grid.txt
+        run: python -m pip install -r requirements-find.txt -r requirements-grid.txt
       - name: Restore the CLIP model cache
         id: model-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -58,7 +57,7 @@ jobs:
           path: ~/.cache/huggingface
           key: clip-vit-base-patch32-${{ runner.os }}-v1
       - name: Make sure the CLIP model is downloaded
-        run: python -c "from transformers import CLIPModel, CLIPProcessor; n='openai/clip-vit-base-patch32'; CLIPModel.from_pretrained(n); CLIPProcessor.from_pretrained(n); print('CLIP model ready')"
+        run: python fgu_find_maps.py download
       # Saved now, not at the end of the job, so a failing test run doesn't throw away the download.
       - name: Save the CLIP model cache
         if: steps.model-cache.outputs.cache-hit != 'true'
@@ -68,20 +67,10 @@ jobs:
           key: clip-vit-base-patch32-${{ runner.os }}-v1
       - name: Run the safety tests
         run: python fgu_support_test_safety.py
-      - name: Run the classifier correctness tests
-        run: python fgu_support_test_classifier.py
+      - name: Run the model correctness tests
+        run: python fgu_support_test_model.py
       - name: Run the map-tools window tests
         run: python fgu_support_test_ui.py
-      # The one path every other test skips (they pass --no-update-check): the real
-      # check against huggingface.co. It must reach the Hub and must not hang or crash.
-      - name: Model update check, against the real Hugging Face
-        run: |
-          mkdir -p "$RUNNER_TEMP/smoke"
-          python -c "from PIL import Image; Image.new('RGB', (64, 64), 'white').save('$RUNNER_TEMP/smoke/a.png')"
-          python fgu_classify_maps.py --dir "$RUNNER_TEMP/smoke" --no-move --check-update < /dev/null > "$RUNNER_TEMP/smoke.log" 2>&1
-          cat "$RUNNER_TEMP/smoke.log"
-          if grep -q "Could not reach Hugging Face" "$RUNNER_TEMP/smoke.log"; then echo "FAIL: the update check could not reach Hugging Face"; exit 1; fi
-          grep -Eq "Model is already up to date|newer CLIP model" "$RUNNER_TEMP/smoke.log"
 
   safety-windows:
     name: Safety tests (Windows, set up by the real launcher)
@@ -95,9 +84,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # run_windows.ps1 -SetupOnly is the launcher's real first-run path: download
       # uv, check its SHA-256, make a private Python, install the packages.
-      - name: First-run setup, classifier
+      - name: First-run setup, map finder
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_windows.ps1 -Tool classify -SetupOnly
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_windows.ps1 -Tool find -SetupOnly
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: First-run setup, grid detector
         run: |
@@ -106,23 +95,11 @@ jobs:
       - name: A second run must do no setup at all (the no-network-after-first-run promise)
         run: |
           $ErrorActionPreference = 'Continue'
-          $out = powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_windows.ps1 -Tool classify -SetupOnly 2>&1 | Out-String
-          Write-Host $out
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if ($out -match 'First-time setup') {
-            Write-Host 'FAIL: the second run tried to set things up again'
-            exit 1
-          }
-      # run_find_maps.bat starts the map finder through the same launcher. It needs the
-      # classifier's packages, so after the classifier setup it must have nothing to do.
-      - name: The map finder launcher shares the classifier's setup
-        run: |
-          $ErrorActionPreference = 'Continue'
           $out = powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_windows.ps1 -Tool find -SetupOnly 2>&1 | Out-String
           Write-Host $out
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($out -match 'First-time setup') {
-            Write-Host 'FAIL: the map finder tried to set things up again'
+            Write-Host 'FAIL: the second run tried to set things up again'
             exit 1
           }
       # run_ui.bat needs both package sets, which the two setups above installed.
@@ -144,7 +121,7 @@ jobs:
           key: clip-vit-base-patch32-${{ runner.os }}-v1
       - name: Make sure the CLIP model is downloaded
         run: |
-          venv\Scripts\python.exe -c "from transformers import CLIPModel, CLIPProcessor; n='openai/clip-vit-base-patch32'; CLIPModel.from_pretrained(n); CLIPProcessor.from_pretrained(n); print('CLIP model ready')"
+          venv\Scripts\python.exe fgu_find_maps.py download
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Save the CLIP model cache
         if: steps.model-cache.outputs.cache-hit != 'true'
@@ -156,24 +133,11 @@ jobs:
         run: |
           venv\Scripts\python.exe fgu_support_test_safety.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Run the classifier correctness tests
+      - name: Run the model correctness tests
         run: |
-          venv\Scripts\python.exe fgu_support_test_classifier.py
+          venv\Scripts\python.exe fgu_support_test_model.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run the map-tools window tests
         run: |
           venv\Scripts\python.exe fgu_support_test_ui.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Model update check, against the real Hugging Face
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $dir = Join-Path $env:RUNNER_TEMP 'smoke'
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          venv\Scripts\python.exe -c "from PIL import Image; import sys; Image.new('RGB', (64, 64), 'white').save(sys.argv[1])" (Join-Path $dir 'a.png')
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $out = $null | venv\Scripts\python.exe fgu_classify_maps.py --dir $dir --no-move --check-update 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $out
-          if ($code -ne 0) { exit $code }
-          if ($out -match 'Could not reach Hugging Face') { Write-Host 'FAIL: the update check could not reach Hugging Face'; exit 1 }
-          if ($out -notmatch 'Model is already up to date|newer CLIP model') { Write-Host 'FAIL: the update check printed no result'; exit 1 }

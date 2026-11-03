@@ -6,17 +6,20 @@ picture sheet.
     python3 fgu_find_maps.py index  --dir LIBRARY
     python3 fgu_find_maps.py search --dir LIBRARY "tavern interior at night"
     python3 fgu_find_maps.py sheet  --dir LIBRARY
+    python3 fgu_find_maps.py download
 
-index   Reads every image under LIBRARY (sub-folders included) once, with the same
-        CLIP model the classifier uses, and remembers what each one looks like.
-        Only new or changed images are read again, so re-running it is quick, and a
-        map the classifier has since moved into a category folder is not re-read.
+index   Reads every image under LIBRARY (sub-folders included) once, with a CLIP
+        model, and remembers what each one looks like. Only new or changed images
+        are read again, so re-running it is quick, and a map you have moved to
+        another folder inside LIBRARY is not re-read.
 search  Ranks the library against a description and writes an HTML page of
         thumbnails (best match first) that you can open in a browser. Click one to
         open the real map. It brings the index up to date first.
 sheet   HTML pages for the whole library, grouped by folder. An index page lists the
         folders with their map counts, and each folder's maps are split across pages
         of at most 96, so no page ever holds the whole library.
+download  Fetches (or updates) the CLIP model, about 600 MB the first time. It is the
+        only thing in this script that goes online, and it never reads a library.
 
 What it writes, and where: only inside LIBRARY/.fgu_map_index/ -- the index
 (index.npz, updated in place when the library changes), a small JPEG thumbnail
@@ -25,8 +28,8 @@ is never overwritten: a new one gets the next free name. Nothing is ever deleted
 so thumbnails of maps you later remove stay behind; the whole folder is a cache
 and is safe to delete by hand at any time.
 
-It never goes online: the CLIP model must already be downloaded (running the
-classifier once does that).
+Apart from `download`, it never goes online: the CLIP model must already be downloaded
+(run `download` once, or press "Update AI model cache" in the window).
 """
 import argparse
 import functools
@@ -78,9 +81,8 @@ DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 
 
 # --- CLIP ENCODING ---
-# The same maths as fgu_classify_maps.py (see its comment on why the submodules
-# are used rather than get_*_features); fgu_support_test_classifier.py checks the
-# two stay in agreement.
+# The two towers are called directly, not through get_text_features/get_image_features:
+# those helpers have changed what they return between transformers releases.
 
 def _pooled(output):
     pooled = getattr(output, "pooler_output", None)
@@ -160,10 +162,21 @@ def load_model():
         processor = load_processor(local_files_only=True)
     except Exception as e:
         print(f"❌ The CLIP model isn't downloaded yet ({e}).\n"
-              f"   Run the classifier once, with internet, to download it; this tool never goes online.")
+              f"   Run `python fgu_find_maps.py download` once, with internet (or press \"Update AI model cache\" in the window).\n"
+              f"   Searching and indexing never go online.")
         return None
     model.eval()
     return model, processor
+
+
+def download_model():
+    """Fetch or refresh the cached model. The one place here that is allowed to go online."""
+    from transformers import CLIPModel
+    print("Updating the AI model cache (the first time this downloads about 600 MB; needs internet)...", flush=True)
+    CLIPModel.from_pretrained(MODEL_ID)
+    load_processor(local_files_only=False)
+    print("The AI model cache is up to date.")
+    return 0
 
 
 # --- LIBRARY + INDEX ---
@@ -583,6 +596,7 @@ def cmd_sheet(args):
 def build_parser():
     parser = argparse.ArgumentParser(description="Find maps in a library by describing them.")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("download", help="download or update the AI model (the only command that goes online)")
     for name, helptext in (("index", "read the library and remember what each map looks like"),
                            ("search", "rank the library against a description and write a picture page"),
                            ("sheet", "write a picture page of the whole library, grouped by folder")):
@@ -606,6 +620,8 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.command == "download":
+        return download_model()
     if not os.path.isdir(args.dir):
         print(f"❌ Not a folder: {args.dir}")
         return 1

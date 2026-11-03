@@ -8,15 +8,13 @@ cache button, which you press yourself).
     python3 fgu_ui.py [--library "/path/to/maps"] [--no-browser]
 
 From the page you can search the library by description, browse it a page at a
-time, sort maps into category folders (preview first, with an undo), detect grids on
-any folder, check a Fantasy Grounds campaign for maps that are heavy to display, and
+time, detect grids on any folder, check a Fantasy Grounds campaign for maps that are heavy to display, and
 build the index / update the AI model cache.
 
 It is a thin runner: every action starts one of the existing scripts
-(fgu_classify_maps.py, fgu_detect_grid.py, fgu_find_maps.py, fgu_support_maptest.py)
-with the same flags you would type, and shows their output. So their safety rules apply unchanged:
-nothing is overwritten, sorting moves files only after you tick the confirmation
-box and always leaves an undo file, and this script itself writes no files at all.
+(fgu_detect_grid.py, fgu_find_maps.py, fgu_support_maptest.py) with the same flags
+you would type, and shows their output. So their safety rules apply unchanged:
+nothing is overwritten, and this script itself writes no files at all.
 
 It never tries to show the whole library. Browsing is 48 maps per page, a search
 shows at most 100, folders are listed by name and count, and the log keeps the last
@@ -67,7 +65,6 @@ MAX_QUERY_LENGTH = 300
 
 THUMB_NAME = re.compile(r"^[0-9a-f]{20}\.jpg$")
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
-MANIFEST_NAME = re.compile(r"^fgu_moves_\d{4}-\d{2}-\d{2}_\d{6}\.jsonl$")
 
 
 # ---------------------------------------------------------------------------
@@ -139,23 +136,8 @@ def read_index(library):
 
 def library_summary(library):
     """Counts only -- never a listing of the maps."""
-    top_images, manifests = 0, []
-    with os.scandir(library) as entries:
-        for entry in entries:
-            try:
-                if not entry.is_file():
-                    continue
-            except OSError:
-                continue
-            name = entry.name
-            if name.lower().endswith(VALID_IMAGE_EXTS) and not name.startswith("."):
-                top_images += 1
-            elif MANIFEST_NAME.match(name):
-                manifests.append(name)
     index = read_index(library)
     return {
-        "top_level_images": top_images,
-        "undo_files": sorted(manifests, reverse=True)[:20],
         "indexed": len(index["paths"]) if index else None,
         "index_updated": index["mtime"] if index else None,
     }
@@ -190,18 +172,6 @@ def open_with_default_app(path):
 # ---------------------------------------------------------------------------
 # Jobs: one existing script at a time, its output streamed into the page
 # ---------------------------------------------------------------------------
-UPDATE_MODEL_CODE = (
-    "from transformers import CLIPModel, CLIPProcessor\n"
-    f"n = '{MODEL_ID}'\n"
-    "print('Updating the AI model cache (the first time this downloads about 600 MB; needs internet)...', flush=True)\n"
-    "CLIPModel.from_pretrained(n)\n"
-    "import transformers\n"
-    "# only 4.x needs the flag to leave out the image-processor warning; in 5.x the flag is deprecated\n"
-    "CLIPProcessor.from_pretrained(n, **({} if int(transformers.__version__.split('.')[0]) >= 5 else {'use_fast': False}))\n"
-    "print('The AI model cache is up to date.')\n"
-)
-
-
 def build_command(action, library, options):
     """(title, argv) for a UI action, or raises ValueError with a message for the user.
     Every action is one of the existing scripts with the flags you'd type yourself. The
@@ -224,27 +194,6 @@ def build_command(action, library, options):
         # "--" ends the options, so a description that starts with "-" is still just text.
         return f"Search: {query}", [py, script("fgu_find_maps.py"), "search", "--dir", library,
                                     "--top", str(top), "--no-page", "--json", "--", query]
-    if action == "sort_preview":
-        stamp = time.strftime("%Y-%m-%d_%H%M%S")
-        cmd = [py, script("fgu_classify_maps.py"), "--dir", library, "--no-move", "--no-update-check",
-               "--report", os.path.join(library, f"fgu_report_{stamp}.csv")]
-        if options.get("detect_photos"):
-            cmd.append("--detect-photos")
-        return "Sort: preview (nothing is moved)", cmd
-    if action == "sort":
-        if options.get("confirm") is not True:
-            raise ValueError("Tick the box to confirm that the maps should be moved.")
-        cmd = [py, script("fgu_classify_maps.py"), "--dir", library, "--move-to", library, "-y", "--no-update-check"]
-        if options.get("detect_photos"):
-            cmd.append("--detect-photos")
-        return "Sort maps into category folders", cmd
-    if action == "undo":
-        name = str(options.get("manifest", ""))
-        if options.get("confirm") is not True:
-            raise ValueError("Tick the box to confirm that the moves should be undone.")
-        if not MANIFEST_NAME.match(name) or not os.path.isfile(os.path.join(library, name)):
-            raise ValueError("That undo file isn't in this folder.")
-        return "Undo a sort", [py, script("fgu_classify_maps.py"), "--undo", os.path.join(library, name), "-y"]
     if action == "grid":
         cmd = [py, script("fgu_detect_grid.py"), "--dir", library]
         if options.get("force"):
@@ -266,7 +215,7 @@ def build_command(action, library, options):
             cmd += ["--campaign", campaign]
         return "Check campaign maps for heavy load", cmd
     if action == "update_model":
-        return "Update AI model cache", [py, "-c", UPDATE_MODEL_CODE]
+        return "Update AI model cache", [py, script("fgu_find_maps.py"), "download"]
     raise ValueError("Unknown action.")
 
 
@@ -529,7 +478,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         library = None
         if action in ("index", "search"):
             library = self._library({"lib": [str(body.get("lib", ""))]})
-        elif action in ("sort_preview", "sort", "undo", "grid"):
+        elif action == "grid":
             # These work on the folder named for them, which can be any folder, not only the library.
             library = self._library({"lib": [str(options.get("folder") or body.get("lib", ""))]})
         title, argv = build_command(action, library, options)
@@ -618,14 +567,13 @@ p { margin:6px 0; }
 <div class="tabs" role="tablist">
   <button class="tab" role="tab" data-tab="find" aria-selected="true">Find</button>
   <button class="tab" role="tab" data-tab="browse" aria-selected="false">Browse</button>
-  <button class="tab" role="tab" data-tab="sort" aria-selected="false">Sort</button>
   <button class="tab" role="tab" data-tab="grid" aria-selected="false">Grids</button>
   <button class="tab" role="tab" data-tab="check" aria-selected="false">Check</button>
   <button class="tab" role="tab" data-tab="setup" aria-selected="false">Setup</button>
 </div>
 
 <div class="panel" id="panel-find">
-  <p class="muted">Describe the map you want, for example <em>tavern interior at night</em>. It looks at the pictures, so it also finds maps in folders like "unclassified".</p>
+  <p class="muted">Describe the map you want, for example <em>tavern interior at night</em>. It looks at the pictures, so it also finds maps in folders with unhelpful names.</p>
   <div class="row">
     <input type="text" id="query" placeholder="What are you looking for?" style="flex:1 1 300px" maxlength="300">
     <select id="top"><option>12</option><option selected>24</option><option>48</option><option>100</option></select>
@@ -641,22 +589,6 @@ p { margin:6px 0; }
   <div class="folders" id="folders"></div>
   <div class="row"><button id="prev">&larr; Previous</button><span id="pageinfo" class="muted"></span><button id="next">Next &rarr;</button></div>
   <div class="grid" id="browse-results"></div>
-</div>
-
-<div class="panel" id="panel-sort" hidden>
-  <p>Sorts maps into category folders (dungeon, ruin, tavern, ...). It only looks at maps sitting <strong>directly inside</strong> the folder, not in its sub-folders, so a library that is already sorted has little left to do.</p>
-  <div class="row"><label for="sort-folder">Folder to sort:</label>
-    <input type="text" id="sort-folder" list="folder-choices" placeholder="(the folder at the top)" style="flex:1 1 320px" autocomplete="off" spellcheck="false"></div>
-  <p id="sort-count" class="muted"></p>
-  <label class="check"><input type="checkbox" id="photos"> <span>Also tag pictures that look like photographs "not a map" (experimental).</span></label>
-  <div class="row"><button id="preview" class="primary">Preview (moves nothing)</button><span class="muted">Writes a CSV report of what it would do into the folder.</span></div>
-  <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
-  <label class="check"><input type="checkbox" id="confirm-sort"> <span>Yes, move the maps into category folders inside this folder. An undo file is saved.</span></label>
-  <div class="row"><button id="sortnow">Sort the maps</button></div>
-  <h2 style="margin-top:18px">Undo a sort</h2>
-  <div class="row"><select id="undo-file"></select></div>
-  <label class="check"><input type="checkbox" id="confirm-undo"> <span>Yes, put those maps back where they were. Nothing is overwritten and no folders are removed. (Only undo files made by this installation are used; one from anywhere else is refused.)</span></label>
-  <div class="row"><button id="undo">Undo</button></div>
 </div>
 
 <div class="panel" id="panel-grid" hidden>
@@ -713,7 +645,7 @@ const q = (params) => new URLSearchParams(params).toString();
 
 function setBusy(value) {
   busy = value;
-  for (const id of ["search", "preview", "sortnow", "undo", "grid", "update-model", "index", "checkrun"]) $(id).disabled = value;
+  for (const id of ["search", "grid", "update-model", "index", "checkrun"]) $(id).disabled = value;
   $("stop").disabled = !value;
 }
 
@@ -728,37 +660,19 @@ function say(text, cls) { const s = $("status"); s.textContent = text; s.classNa
 
 async function refreshStatus() {
   const s = await api("/api/status?" + q({ lib }));
-  $("model-state").textContent = s.model_ready ? "The AI model is in the cache and ready." : "The AI model is not in the cache yet. Searching and sorting need it: press Update AI model cache below.";
+  $("model-state").textContent = s.model_ready ? "The AI model is in the cache and ready." : "The AI model is not in the cache yet. Searching needs it: press Update AI model cache below.";
   $("model-state").className = s.model_ready ? "muted" : "warn";
   if (!lib) return;
   if (s.error || !s.library) { say(s.error || "Folder not found.", "bad"); return; }
   const l = s.library, parts = [];
   parts.push(l.indexed === null ? "Not indexed yet (see Setup)" : l.indexed.toLocaleString() + " maps indexed");
   parts.push("model " + (s.model_ready ? "ready" : "not in the cache (see Setup)"));
-  parts.push(l.top_level_images.toLocaleString() + " maps directly in this folder (what Sort looks at)");
   say(parts.join("  \u00b7  "), (l.indexed === null || !s.model_ready) ? "warn" : "muted");
   fillFolderChoices(l.indexed !== null).catch(() => {});
-  refreshSortInfo().catch(() => {});
 }
 
 // The folder a tool should work on: what was typed in its own box, else the folder at the top.
 const folderOf = (id) => $(id).value.trim().replace(/^"|"$/g, "") || lib;
-
-async function refreshSortInfo() {
-  const folder = folderOf("sort-folder"), sel = $("undo-file");
-  sel.textContent = "";
-  let names = [], text = "";
-  if (folder) {
-    const s = await api("/api/status?" + q({ lib: folder }));
-    if (s.library) {
-      names = s.library.undo_files;
-      text = s.library.top_level_images.toLocaleString() + " map(s) are directly inside this folder.";
-    } else { text = s.error || "That folder was not found."; }
-  }
-  $("sort-count").textContent = text;
-  for (const name of names) { const o = document.createElement("option"); o.textContent = name; sel.appendChild(o); }
-  if (!names.length) { const o = document.createElement("option"); o.textContent = "(no undo files in this folder)"; sel.appendChild(o); }
-}
 
 // Offers the library's top-level folders (names and counts only) in the folder boxes.
 async function fillFolderChoices(indexed) {
@@ -862,12 +776,8 @@ $("check").addEventListener("click", async () => {
 $("lib").addEventListener("keydown", (e) => { if (e.key === "Enter") $("check").click(); });
 $("search").addEventListener("click", () => { wantResultsFor = $("query").value; run("search", { query: $("query").value, top: parseInt($("top").value, 10) }).then((ok) => { if (!ok) wantResultsFor = null; }); });
 $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") $("search").click(); });
-$("preview").addEventListener("click", () => run("sort_preview", { folder: folderOf("sort-folder"), detect_photos: $("photos").checked }));
-$("sortnow").addEventListener("click", () => run("sort", { folder: folderOf("sort-folder"), detect_photos: $("photos").checked, confirm: $("confirm-sort").checked }));
-$("undo").addEventListener("click", () => run("undo", { folder: folderOf("sort-folder"), manifest: $("undo-file").value, confirm: $("confirm-undo").checked }));
 $("grid").addEventListener("click", () => run("grid", { folder: folderOf("grid-folder"), force: $("force").checked, confirm: $("confirm-grid").checked }));
 $("checkrun").addEventListener("click", () => run("check", { campaign: $("check-folder").value.trim(), top: parseInt($("check-top").value, 10) }));
-$("sort-folder").addEventListener("change", () => refreshSortInfo().catch(() => {}));
 $("update-model").addEventListener("click", () => run("update_model"));
 $("index").addEventListener("click", () => run("index"));
 $("stop").addEventListener("click", () => api("/api/stop", {}).catch(() => {}));

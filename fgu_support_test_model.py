@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-Correctness tests for the model code in fgu_classify_maps.py and fgu_find_maps.py
-(the safety tests in fgu_support_test_safety.py cover what they do to files; these
-cover whether they still give the right answers).
+Correctness tests for the model code in fgu_find_maps.py (the safety tests in
+fgu_support_test_safety.py cover what it does to files; these cover whether it
+still gives the right answers).
 
-The classifier encodes the category prompts once per run and pushes images through
-the model in batches, instead of re-encoding every prompt for every image. That is
-only acceptable if it gives the SAME answers, so this checks, against the original
+It encodes the search text once and pushes images through the model in batches,
+instead of re-running the whole model for every picture. That is only acceptable
+if it gives the SAME answers, so this checks, against the original
 one-image-at-a-time model(**inputs) forward pass:
 
-  - identical probabilities and identical winning category, image by image
+  - identical probabilities and identical winning description, image by image
   - the same results whatever the batch size
   - a file that can't be read costs only itself, not the rest of its batch
-  - fgu_find_maps.py encodes text and images exactly as the classifier does, and a
-    search for a colour ranks the image of that colour first
+  - a search for a colour ranks the image of that colour first
   - print-size maps (bigger than Pillow's default decompression-bomb limit) are
     read, a big JPEG decoded at reduced size means the same thing to the model as a
     full decode, an absurdly large image is still refused, and an unreadable file is
@@ -26,11 +25,12 @@ one-image-at-a-time model(**inputs) forward pass:
     map takes long
 
 It uses the real CLIP model from the local cache (it never goes online), so run it
-the same way as the safety tests -- inside the project's venv, after the classifier
-has been run once or the model has otherwise been downloaded:
+the same way as the safety tests -- inside the project's venv, after the model has
+been downloaded (`python fgu_find_maps.py download`, or the window's "Update AI
+model cache" button):
 
     source venv/bin/activate
-    python3 fgu_support_test_classifier.py
+    python3 fgu_support_test_model.py
 
 CI runs it on macOS and Windows, with whatever transformers/torch versions those
 resolve, which is the point: the encoding goes through CLIPModel's submodules
@@ -80,15 +80,21 @@ def synthetic_images():
 
 
 def load_module():
-    """Import fgu_classify_maps without it parsing THIS script's command line."""
-    sys.argv = ["fgu_classify_maps.py"]
-    sys.modules.pop("fgu_classify_maps", None)
-    return importlib.import_module("fgu_classify_maps")
+    """Import fgu_find_maps without it parsing THIS script's command line."""
+    sys.argv = ["fgu_find_maps.py"]
+    sys.modules.pop("fgu_find_maps", None)
+    return importlib.import_module("fgu_find_maps")
+
+
+def pixels_of(m, tmp, path, processor):
+    """The model-ready pixels for one picture, prepared the way indexing prepares them."""
+    folder, name = os.path.split(path)
+    return m.read_image(folder, name, os.path.splitext(name)[0] + ".jpg", processor)
 
 
 def test_new_path_matches_the_original_forward_pass(m, model, processor, tmp):
-    print("\n[model] cached-prompt batched path == the original per-image forward pass")
-    prompts = list(m.CATEGORIES.values())
+    print("\n[model] cached-text batched path == the original per-image forward pass")
+    prompts = ["a tavern interior", "a dungeon corridor", "a forest clearing", "a grid of rooms"]
     text_features = m.encode_text_features(model, processor, prompts)
 
     paths = {}
@@ -104,19 +110,18 @@ def test_new_path_matches_the_original_forward_pass(m, model, processor, tmp):
         with torch.no_grad():
             old[name] = model(**inputs).logits_per_image.softmax(dim=1)[0].cpu()
 
-    pixels = torch.cat([m.preprocess_image(processor, p) for p in paths.values()])
-    image_features = m.encode_image_features(model, pixels)
-    new = m.softmax_probs(model, image_features, text_features).cpu()
+    def probs(image_features):
+        return (model.logit_scale.exp() * image_features @ text_features.T).softmax(dim=1).detach().cpu()
+
+    pixels = torch.cat([pixels_of(m, tmp, p, processor) for p in paths.values()])
+    new = probs(m.encode_image_features(model, pixels))
 
     for i, name in enumerate(paths):
         diff = (new[i] - old[name]).abs().max().item()
         check(diff < 1e-3, f"{name}: probabilities match (largest difference {diff:.2e})")
-        check(int(new[i].argmax()) == int(old[name].argmax()), f"{name}: same winning category")
+        check(int(new[i].argmax()) == int(old[name].argmax()), f"{name}: same winning description")
 
-    one_at_a_time = torch.cat([
-        m.softmax_probs(model, m.encode_image_features(model, m.preprocess_image(processor, p)), text_features).cpu()
-        for p in paths.values()
-    ])
+    one_at_a_time = torch.cat([probs(m.encode_image_features(model, pixels_of(m, tmp, p, processor))) for p in paths.values()])
     check((one_at_a_time - new).abs().max().item() < 1e-4, "batching doesn't change any result (batch of 5 vs one at a time)")
 
 
@@ -124,39 +129,21 @@ def test_unreadable_file_costs_only_itself(m, tmp):
     print("\n[run] an unreadable image doesn't stop the rest of its batch")
     folder = os.path.join(tmp, "mixed")
     os.makedirs(folder)
-    good = []
     for name, array in list(synthetic_images().items())[:3]:
-        path = os.path.join(folder, f"{name}.png")
-        Image.fromarray(array).save(path)
-        good.append(path)
-    bad = os.path.join(folder, "broken.png")
-    with open(bad, "wb") as f:
+        Image.fromarray(array).save(os.path.join(folder, f"{name}.png"))
+    with open(os.path.join(folder, "broken.png"), "wb") as f:
         f.write(b"this is not a png")
-    everything = sorted(good + [bad])
-    entries = [(p, None, None) for p in everything]
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        result = m.run_classification(entries, no_update_check=True, batch_size=8)
-    text = out.getvalue()
-    check(len(result) == len(entries), "every file is accounted for in the result")
-    check(text.count("Tagged:") == 3, f"the 3 good images were all tagged (saw {text.count('Tagged:')})")
-    check(text.count("❌ Error") == 1, f"exactly one error was reported (saw {text.count('❌ Error')})")
+        index = m.update_index(folder, batch_size=8)
+    check(index is not None and len(index["paths"]) == 3, f"the 3 good images were all indexed (got {len(index['paths']) if index else None})")
+    check(len(m.load_index(folder)["failed"]) == 1, "...and the broken one was remembered as unreadable")
 
 
-def test_find_maps_agrees_with_the_classifier_and_ranks_sensibly(m, model, processor, tmp):
-    print("\n[fgu_find_maps.py] same encoding as the classifier; a colour search finds that colour")
-    sys.modules.pop("fgu_find_maps", None)
-    f = importlib.import_module("fgu_find_maps")
-
-    prompts = ["a tavern interior", "a dungeon corridor"]
-    check((f.encode_text_features(model, processor, prompts) - m.encode_text_features(model, processor, prompts)).abs().max().item() < 1e-6,
-          "text embeddings are identical to the classifier's")
-    path = os.path.join(tmp, "probe.png")
-    Image.fromarray(synthetic_images()["rooms"]).save(path)
-    pixels = m.preprocess_image(processor, path)
-    check((f.encode_image_features(model, pixels) - m.encode_image_features(model, pixels)).abs().max().item() < 1e-6,
-          "image embeddings are identical to the classifier's")
+def test_find_maps_ranks_sensibly(m, model, processor, tmp):
+    print("\n[fgu_find_maps.py] a colour search finds that colour")
+    f = m
 
     lib = os.path.join(tmp, "colours")
     os.makedirs(lib)
@@ -173,8 +160,7 @@ def test_find_maps_agrees_with_the_classifier_and_ranks_sensibly(m, model, proce
 
 def test_huge_maps(m, model, processor, tmp):
     print("\n[huge maps] print-size maps are read; absurd ones are still refused")
-    sys.modules.pop("fgu_find_maps", None)
-    f = importlib.import_module("fgu_find_maps")
+    f = m
     lib = os.path.join(tmp, "huge")
     os.makedirs(lib)
 
@@ -182,11 +168,6 @@ def test_huge_maps(m, model, processor, tmp):
     big = os.path.join(lib, "big.png")
     Image.new("RGB", (15000, 13000), (120, 100, 80)).save(big)
     check(15000 * 13000 > 2 * 89_478_485, "the test map really is over Pillow's default limit")
-    try:
-        tensor = m.preprocess_image(processor, big)
-        check(tuple(tensor.shape) == (1, 3, 224, 224), "the classifier reads a map over the old limit")
-    except Exception as e:
-        check(False, f"the classifier reads a map over the old limit (raised {e!r})")
     try:
         tensor = f.read_image(lib, "big.png", "big.jpg", processor)
         check(tuple(tensor.shape) == (1, 3, 224, 224) and os.path.isfile(os.path.join(lib, ".fgu_map_index", "thumbs", "big.jpg")),
@@ -199,13 +180,13 @@ def test_huge_maps(m, model, processor, tmp):
     ramp = np.linspace(0, 255, 9000, dtype=np.uint8)
     jpeg = os.path.join(lib, "big.jpg")
     Image.fromarray(np.stack([np.tile(ramp, (8000, 1)), np.tile(ramp[::-1], (8000, 1)), np.full((8000, 9000), 90, np.uint8)], axis=-1)).save(jpeg, quality=60)
-    check(9000 * 8000 > m.HUGE_IMAGE_PIXELS, "the test JPEG is big enough to be decoded at reduced size")
-    drafted = m.encode_image_features(model, m.preprocess_image(processor, jpeg))
-    saved, m.HUGE_IMAGE_PIXELS = m.HUGE_IMAGE_PIXELS, 10 ** 12
+    check(9000 * 8000 > f.HUGE_IMAGE_PIXELS, "the test JPEG is big enough to be decoded at reduced size")
+    drafted = f.encode_image_features(model, f.read_image(lib, "big.jpg", "big_drafted.jpg", processor))
+    saved, f.HUGE_IMAGE_PIXELS = f.HUGE_IMAGE_PIXELS, 10 ** 12
     try:
-        full = m.encode_image_features(model, m.preprocess_image(processor, jpeg))
+        full = f.encode_image_features(model, f.read_image(lib, "big.jpg", "big_full.jpg", processor))
     finally:
-        m.HUGE_IMAGE_PIXELS = saved
+        f.HUGE_IMAGE_PIXELS = saved
     similarity = float((drafted * full).sum())
     check(similarity > 0.98, f"reduced-size decoding gives essentially the same embedding (cosine {similarity:.4f})")
     os.remove(jpeg)
@@ -213,15 +194,13 @@ def test_huge_maps(m, model, processor, tmp):
     # Still refused: 750 million pixels, mode '1' so building it costs only ~94 MB.
     absurd = os.path.join(lib, "absurd.png")
     Image.new("1", (30000, 25000)).save(absurd)
-    for name, read in (("the classifier", lambda: m.preprocess_image(processor, absurd)),
-                       ("fgu_find_maps", lambda: f.read_image(lib, "absurd.png", "absurd.jpg", processor))):
-        try:
-            read()
-            check(False, f"{name} refuses an image over the ceiling")
-        except Image.DecompressionBombError:
-            check(True, f"{name} refuses an image over the ceiling")
-        except Exception as e:
-            check(False, f"{name} refuses an image over the ceiling (raised {e!r} instead)")
+    try:
+        f.read_image(lib, "absurd.png", "absurd.jpg", processor)
+        check(False, "an image over the ceiling is refused")
+    except Image.DecompressionBombError:
+        check(True, "an image over the ceiling is refused")
+    except Exception as e:
+        check(False, f"an image over the ceiling is refused (raised {e!r} instead)")
     os.remove(absurd)
 
     # A file that failed because of the size limit is retried when the limit changes.
@@ -248,8 +227,7 @@ def test_fast_image_processor(m, model, processor, tmp):
     print("\n[fast processor] used when it works, standard one otherwise, same embeddings")
     import importlib.util
     import transformers
-    sys.modules.pop("fgu_find_maps", None)
-    f = importlib.import_module("fgu_find_maps")
+    f = m
     have_torchvision = importlib.util.find_spec("torchvision") is not None
     def is_fast(proc):
         """Does this processor use torchvision? 4.x names it ...Fast; 5.x makes it the
@@ -258,12 +236,11 @@ def test_fast_image_processor(m, model, processor, tmp):
         return cls.__name__.endswith("Fast") or any(base.__name__ == "TorchvisionBackend" for base in cls.__mro__)
 
     name = type(processor.image_processor).__name__
-    print(f"  info - transformers {transformers.__version__}, torchvision installed: {have_torchvision}; the classifier is using {name}")
+    print(f"  info - transformers {transformers.__version__}, torchvision installed: {have_torchvision}; the finder is using {name}")
     check(is_fast(processor) == have_torchvision, "the fast image processor is used exactly when torchvision is installed")
-    check(is_fast(f.load_model()[1]) == is_fast(processor), "fgu_find_maps picks the same kind of processor")
+    check(is_fast(f.load_model()[1]) == is_fast(processor), "load_model picks the same kind of processor")
 
-    fast_kwargs = m.fast_processor_kwargs()
-    check(fast_kwargs == f.fast_processor_kwargs(), f"both scripts ask for the fast processor the same way ({fast_kwargs or 'the default'})")
+    fast_kwargs = f.fast_processor_kwargs()
 
     class Stub:
         calls = []
@@ -277,43 +254,42 @@ def test_fast_image_processor(m, model, processor, tmp):
                 raise cls.failure
             return "standard processor"
 
-    real_module_class, real_transformers_class = m.CLIPProcessor, transformers.CLIPProcessor
-    m.CLIPProcessor = transformers.CLIPProcessor = Stub
+    real_transformers_class = transformers.CLIPProcessor
+    transformers.CLIPProcessor = Stub
     try:
         for failure in (ImportError("no torchvision"), RuntimeError("torchvision is broken")):
             Stub.failure, Stub.calls = failure, []
             noise = io.StringIO()
             with contextlib.redirect_stdout(noise):
-                got = (m.load_processor("x", True), f.load_processor(True))
-            check(got == ("standard processor", "standard processor") and Stub.calls == [fast_kwargs, {"use_fast": False}] * 2,
-                  f"when the fast one fails with {type(failure).__name__}, both scripts fall back to the standard one")
+                got = f.load_processor(True)
+            check(got == "standard processor" and Stub.calls == [fast_kwargs, {"use_fast": False}],
+                  f"when the fast one fails with {type(failure).__name__}, it falls back to the standard one")
             check(("isn't available" in noise.getvalue()) == isinstance(failure, RuntimeError),
                   "...and say so only when the failure is unexpected (not for a plain missing torchvision)")
     finally:
-        m.CLIPProcessor, transformers.CLIPProcessor = real_module_class, real_transformers_class
+        transformers.CLIPProcessor = real_transformers_class
 
     if have_torchvision:
-        standard = transformers.CLIPProcessor.from_pretrained(m.MODEL_ID, local_files_only=True, use_fast=False)
+        standard = transformers.CLIPProcessor.from_pretrained(f.MODEL_ID, local_files_only=True, use_fast=False)
         check(not is_fast(standard), "the standard processor really is the standard one")
         cosines = []
         for name_, array in synthetic_images().items():
             path = os.path.join(tmp, f"fp_{name_}.png")
             Image.fromarray(array).save(path)
-            fast_f = m.encode_image_features(model, m.preprocess_image(processor, path))
-            slow_f = m.encode_image_features(model, m.preprocess_image(standard, path))
+            fast_f = f.encode_image_features(model, pixels_of(f, tmp, path, processor))
+            slow_f = f.encode_image_features(model, pixels_of(f, tmp, path, standard))
             cosines.append(float((fast_f * slow_f).sum()))
         check(min(cosines) > 0.999, f"fast and standard processors give the same embeddings (worst cosine {min(cosines):.5f})")
     else:
         print("  skip - the fast-vs-standard comparison needs torchvision, which isn't installed here")
 
     small = Image.new("RGB", (400, 300))
-    check(m.shrink_if_huge(small) is small and f.shrink_if_huge(small) is small, "an ordinary map is left as it is")
+    check(f.shrink_if_huge(small) is small, "an ordinary map is left as it is")
     huge = Image.new("RGB", (9000, 8000))                     # 72 megapixels, over the 60 million line
-    for module in (m, f):
-        shrunk = module.shrink_if_huge(huge)
-        ratio = (shrunk.width / shrunk.height) / (huge.width / huge.height)
-        check(shrunk.width * shrunk.height <= 6_000_000 and abs(ratio - 1) < 0.01,
-              f"{module.__name__}: a 72-megapixel map is shrunk to {shrunk.width}x{shrunk.height}, same shape")
+    shrunk = f.shrink_if_huge(huge)
+    ratio = (shrunk.width / shrunk.height) / (huge.width / huge.height)
+    check(shrunk.width * shrunk.height <= 6_000_000 and abs(ratio - 1) < 0.01,
+          f"a 72-megapixel map is shrunk to {shrunk.width}x{shrunk.height}, same shape")
 
 
 def test_wrong_python_is_explained():
@@ -333,7 +309,7 @@ def test_wrong_python_is_explained():
         "attempt('fgu_ui.py')\n"
         "del sys.modules['numpy']\n"
         "sys.modules['pillow_heif'] = None\n"
-        "for script in ('fgu_find_maps.py', 'fgu_classify_maps.py', 'fgu_detect_grid.py'):\n"
+        "for script in ('fgu_find_maps.py', 'fgu_detect_grid.py'):\n"
         "    attempt(script)\n"
         "import json; print('RESULTS ' + json.dumps(results))\n"
     )
@@ -341,7 +317,7 @@ def test_wrong_python_is_explained():
                           env=dict(os.environ, PYTHONUTF8="1", PYTHONPATH=REPO_ROOT))
     line = next((l for l in done.stdout.splitlines() if l.startswith("RESULTS ")), None)
     results = __import__("json").loads(line[len("RESULTS "):]) if line else {}
-    check(len(results) == 4, f"all four scripts were tried (got {sorted(results)}; stderr: {done.stderr[-200:]!r})")
+    check(len(results) == 3, f"all three scripts were tried (got {sorted(results)}; stderr: {done.stderr[-200:]!r})")
     for script, message in sorted(results.items()):
         check("is missing" in message and "source venv/bin/activate" in message and "venv\\Scripts\\python.exe" in message,
               f"{script}: names the missing package and says to use the project's Python (Mac and Windows)")
@@ -350,8 +326,7 @@ def test_wrong_python_is_explained():
 def test_indexing_shows_progress(m, model, processor, tmp):
     print("\n[progress] indexing says what it is doing, so it never looks hung")
     import re
-    sys.modules.pop("fgu_find_maps", None)
-    f = importlib.import_module("fgu_find_maps")
+    f = m
     lib = os.path.join(tmp, "progress")
     os.makedirs(lib)
     for i in range(5):
@@ -390,19 +365,15 @@ def test_indexing_shows_progress(m, model, processor, tmp):
 
 def main():
     m = load_module()
-    from transformers import CLIPModel, CLIPProcessor
-    try:
-        model = CLIPModel.from_pretrained(m.MODEL_ID, local_files_only=True).to(m.DEVICE)
-        processor = m.load_processor(m.MODEL_ID, True)
-    except Exception as e:
-        print(f"❌ The CLIP model isn't in the local cache ({e}).\n"
-              f"   Run fgu_classify_maps.py once, with internet, to download it.")
+    loaded = m.load_model()
+    if loaded is None:
         sys.exit(2)
+    model, processor = loaded
 
     with tempfile.TemporaryDirectory() as tmp:
         test_new_path_matches_the_original_forward_pass(m, model, processor, tmp)
         test_unreadable_file_costs_only_itself(m, tmp)
-        test_find_maps_agrees_with_the_classifier_and_ranks_sensibly(m, model, processor, tmp)
+        test_find_maps_ranks_sensibly(m, model, processor, tmp)
         test_huge_maps(m, model, processor, tmp)
         test_fast_image_processor(m, model, processor, tmp)
         test_wrong_python_is_explained()
@@ -414,7 +385,7 @@ def main():
         for f in failures:
             print(f"   - {f}")
         sys.exit(1)
-    print("✅ All classifier correctness checks passed.")
+    print("✅ All model correctness checks passed.")
 
 
 if __name__ == "__main__":

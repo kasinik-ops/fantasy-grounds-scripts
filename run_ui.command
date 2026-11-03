@@ -5,7 +5,7 @@ echo "=========================================="
 echo " 🗺️  RPG Map Tools"
 echo "=========================================="
 
-# 1. Environment Setup (everything the classifier, the grid detector and the finder need;
+# 1. Environment Setup (everything the finder and the grid detector need;
 #    osxphotos is only for the command-line --album option, so it isn't installed here)
 if [ ! -d "venv" ]; then
     echo "📦 Creating first-time virtual environment..."
@@ -18,7 +18,7 @@ echo "🔄 Verifying dependencies..."
 # ranges live in the requirements files (shared with the other launchers and CI).
 # --default-timeout keeps this from hanging if a package genuinely does need to be
 # fetched with no connection.
-pip install --quiet --default-timeout=10 -r requirements-classify.txt -r requirements-grid.txt
+pip install --quiet --default-timeout=10 -r requirements-find.txt -r requirements-grid.txt
 
 # 2. Start the window. It opens in your web browser; closing this Terminal window
 #    (or pressing Ctrl+C) stops it.

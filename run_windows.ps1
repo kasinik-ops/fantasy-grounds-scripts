@@ -1,7 +1,7 @@
 # Windows launcher for the map tools -- the Windows counterpart of the Mac
-# run_classifier_map.command / run_grid_detector.command / run_find_maps.command /
-# run_ui.command files. Start it via run_classifier_map.bat, run_grid_detector.bat,
-# run_find_maps.bat or run_ui.bat (double-click), which pass -Tool.
+# run_grid_detector.command / run_find_maps.command / run_ui.command files. Start it
+# via run_grid_detector.bat, run_find_maps.bat or run_ui.bat (double-click), which
+# pass -Tool.
 #
 # Windows has neither Python nor bash, so this uses only what ships with
 # Windows (PowerShell 5.1 and .NET):
@@ -12,15 +12,15 @@
 #     Nothing is installed system-wide and no admin rights are needed; deleting
 #     those two folders removes everything.
 #   - Every run after that: no network requests from this launcher at all.
-#     (The CLIP model update check inside the Python script is separate, and
-#     throttled to once per 24 hours there.)
+#     (Downloading the AI model, once, is separate: the finder does it itself the
+#     first time, and only then.)
 #
 # Keep this file pure ASCII: Windows PowerShell 5.1 reads files without a BOM
 # as ANSI, so a stray smart quote or emoji can break parsing.
 
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('classify', 'grid', 'find', 'ui')]
+    [ValidateSet('grid', 'find', 'ui')]
     [string]$Tool,
 
     # Do the first-run setup (uv, Python, packages) and stop: no dialogs, nothing
@@ -36,32 +36,24 @@ Set-Location -LiteralPath $PSScriptRoot
 # If the .py files are renamed, change Script here (and nowhere else).
 # osxphotos (Apple Photos support) is deliberately absent: it is Mac-only.
 $ToolConfig = @{
-    classify = @{
-        Title    = 'RPG Map Categorizer'
-        Script   = 'fgu_classify_maps.py'
-        Requirements = 'requirements-classify.txt'
-        Stamp    = 'classify'
-    }
     grid     = @{
         Title    = 'RPG Map Grid Detector'
         Script   = 'fgu_detect_grid.py'
         Requirements = 'requirements-grid.txt'
         Stamp    = 'grid'
     }
-    # Needs the same packages as the classifier, so it shares its stamp: if the
-    # classifier is already set up, this does no setup at all.
     find     = @{
         Title    = 'RPG Map Finder'
         Script   = 'fgu_find_maps.py'
-        Requirements = 'requirements-classify.txt'
-        Stamp    = 'classify'
+        Requirements = 'requirements-find.txt'
+        Stamp    = 'find'
     }
-    # The window runs all three tools, so it needs both package sets.
+    # The window runs all the tools, so it needs both package sets.
     ui       = @{
         Title    = 'RPG Map Tools'
         Script   = 'fgu_ui.py'
-        Requirements = 'requirements-classify.txt'
-        Stamp    = 'classify'
+        Requirements = 'requirements-find.txt'
+        Stamp    = 'find'
         ExtraRequirements = 'requirements-grid.txt'
         ExtraStamp = 'grid'
     }
@@ -263,14 +255,6 @@ function Ensure-Environment([string]$StampName, [string]$Requirements) {
 
 # --- The text shown before anything runs ----------------------------------------------
 
-$ClassifyIntro = @'
-This tool uses AI image classification to sort your battle maps into category folders (dungeon, ruin, tavern, and so on), so they are easier to browse and manage.
-
-This does NOT put maps into Fantasy Grounds. Once you have picked out the maps you actually want to use, you still need to manually copy them (and their grid .xml file, if you have run the grid detector) into your Fantasy Grounds campaign images folder.
-
-See the README for full details.
-'@
-
 $GridIntro = @'
 This tool detects each map battle-map grid and writes a Fantasy Grounds sidecar .xml file next to it, so the grid lines up automatically when imported.
 
@@ -284,11 +268,11 @@ See the README for full details.
 '@
 
 $FindIntro = @'
-This tool finds battle maps by description (for example "tavern interior at night"), or shows your whole map library as a page of pictures you can click through. It looks at the pictures themselves, so it also finds maps hiding in folders like "unclassified".
+This tool finds battle maps by description (for example "tavern interior at night"), or shows your whole map library as a page of pictures you can click through. It looks at the pictures themselves, so it also finds maps hiding in folders with unhelpful names.
 
 It only READS your maps. It keeps a small index and thumbnails in a hidden folder called .fgu_map_index inside your maps folder, which is safe to delete at any time. The first time, it reads every map once, which can take a while for a big library; after that only new maps are read.
 
-It needs the AI model the classifier downloads, and never goes online itself. If you have not run the map classifier yet, run run_classifier_map.bat once first.
+It needs an AI model (about 600 MB). If it is not on this computer yet, it is downloaded once, before the first search, and that is the only time this tool goes online.
 
 The results open as a page in your web browser. See the README for full details.
 '@
@@ -325,9 +309,8 @@ try {
     }
 
     # 1. Explain what this does before touching anything, with a way to read more.
-    if ($Tool -eq 'classify')  { $introText = $ClassifyIntro; $introHeight = 200 }
-    elseif ($Tool -eq 'find')  { $introText = $FindIntro;     $introHeight = 250 }
-    else                       { $introText = $GridIntro;     $introHeight = 280 }
+    if ($Tool -eq 'find')  { $introText = $FindIntro; $introHeight = 250 }
+    else                   { $introText = $GridIntro; $introHeight = 280 }
     while ($true) {
         $r = Show-Dialog -Title $Cfg.Title -Message $introText -Buttons 'Cancel', 'Open README', 'Continue' `
             -DefaultButton 'Continue' -MessageHeight $introHeight
@@ -363,16 +346,6 @@ try {
         elseif ($r.Button -eq 'Whole Library') { $PyArgs = @('sheet') + $PyArgs + @('--open') }
         else { Write-Host 'Canceled.'; exit 0 }
     }
-    elseif ($Tool -eq 'classify') {
-        # Only asks WHERE; the Python script itself warns how many files are
-        # affected and asks for confirmation before moving anything.
-        $r = Show-Dialog -Title $Cfg.Title -AskText -TextDefault (Clean-Path $folder) `
-            -Message 'Destination directory to sort classified files into (a subfolder per category will be created inside it). Leave it blank to classify only, without moving anything.' `
-            -Buttons 'Cancel', 'OK' -DefaultButton 'OK' -MessageHeight 60
-        if ($r.Button -ne 'OK') { Write-Host 'Canceled.'; exit 0 }
-        $moveTo = Clean-Path $r.Text
-        if ($moveTo) { $PyArgs += @('--move-to', $moveTo) } else { $PyArgs += '--no-move' }
-    }
     else {
         $r = Show-Dialog -Title $Cfg.Title -Buttons 'Cancel', 'Skip Existing', 'Overwrite' -DefaultButton 'Skip Existing' `
             -Message 'Some maps may already have an FGU grid sidecar (.xml) file. Overwrite existing sidecars, or skip them?' `
@@ -387,15 +360,10 @@ try {
         $r = Show-Dialog -Title $Cfg.Title -Buttons 'Cancel', 'Use Defaults', 'Customize' -DefaultButton 'Use Defaults' `
             -Message 'Use default detection settings, or customize advanced parameters?' -MessageHeight 30
         if ($r.Button -eq 'Customize') {
-            if ($Tool -eq 'classify') {
-                $PyArgs += @(Ask-Option '--unclassified-threshold' 'Minimum CLIP confidence (%) before tagging an image "unclassified" instead of forcing the closest category:' '25')
-            }
-            else {
-                $PyArgs += @(Ask-Option '--grid-min-px' 'Minimum grid square size to consider, in pixels:' '20')
-                $PyArgs += @(Ask-Option '--grid-max-fraction' 'Maximum grid square size, as a fraction of the shorter image side:' '0.25')
-                $PyArgs += @(Ask-Option '--grid-min-confidence' 'Minimum grid-detection confidence (0-1) before reporting "no grid detected":' '0.15')
-                $PyArgs += @(Ask-Option '--grid-min-line-coverage' 'Minimum fraction (0-1) of the image a candidate grid line must actually span to count as real (rejects photo textures like railings or decking):' '0.5')
-            }
+            $PyArgs += @(Ask-Option '--grid-min-px' 'Minimum grid square size to consider, in pixels:' '20')
+            $PyArgs += @(Ask-Option '--grid-max-fraction' 'Maximum grid square size, as a fraction of the shorter image side:' '0.25')
+            $PyArgs += @(Ask-Option '--grid-min-confidence' 'Minimum grid-detection confidence (0-1) before reporting "no grid detected":' '0.15')
+            $PyArgs += @(Ask-Option '--grid-min-line-coverage' 'Minimum fraction (0-1) of the image a candidate grid line must actually span to count as real (rejects photo textures like railings or decking):' '0.5')
         }
         elseif ($r.Button -ne 'Use Defaults') { Write-Host 'Canceled.'; exit 0 }
     }
@@ -403,8 +371,18 @@ try {
     # 5. Make sure Python and the packages exist (a no-op after the first run).
     Ensure-Environment $Cfg.Stamp $Cfg.Requirements
 
-    # 6. Run the script. Its own prompts (move confirmation, model download) are
-    #    answered right here in this console window.
+    # 5b. The finder needs the AI model. If it is not in the cache yet, fetch it now (the
+    #     only time the finder goes online); otherwise this makes no network request.
+    if ($Tool -eq 'find') {
+        $hfHome = if ($env:HF_HOME) { $env:HF_HOME } else { Join-Path $env:USERPROFILE '.cache\huggingface' }
+        if (-not (Test-Path -LiteralPath (Join-Path $hfHome 'hub\models--openai--clip-vit-base-patch32'))) {
+            Write-Host 'The AI model is not on this computer yet. Downloading it now (about 600 MB, needs internet, once only)...'
+            & $VenvPython $scriptPath download
+            if ($LASTEXITCODE -ne 0) { throw 'Downloading the AI model failed. Check the internet connection and try again.' }
+        }
+    }
+
+    # 6. Run the script.
     Write-Host ''
     Write-Host "Starting $($Cfg.Title)..."
     & $VenvPython $scriptPath @PyArgs

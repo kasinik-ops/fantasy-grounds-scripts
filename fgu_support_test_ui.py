@@ -11,16 +11,16 @@ open files:
     search results and the folder list are capped, the log keeps only its tail --
     all proved against an index of 5,000 maps
   - that it can only open a map the index lists, and only serves thumbnails
-  - that every button starts exactly the command it should (sorting and undo need
+  - that every button starts exactly the command it should (replacing grid files needs
     the confirmation box; a search description can't become part of a shell command)
-  - that Sort and Grids can be pointed at any one folder (not just the library), and
+  - that Grids can be pointed at any one folder (not just the library), and
     that the Check tool runs the read-only map-load report on a campaign
   - that it only ever listens on this machine (a connection to the computer's network
-    address is refused), that a hostile index or undo file from a downloaded map pack
-    can't make it open or move anything outside the library, and that a search
+    address is refused), that a hostile index from a downloaded map pack
+    can't make it open anything outside the library, and that a search
     description that looks like an option is still just text
-  - that it writes nothing itself, and that the real Index, Search, Sort-preview,
-    Sort and Undo buttons work end to end and leave files exactly as they should be
+  - that it writes nothing itself, and that the real Index and Search buttons work
+    end to end and leave the maps exactly as they were
 
 The end-to-end parts use the real CLIP model from the local cache (they never go
 online), so run it the same way as the other tests, inside the project's venv:
@@ -253,29 +253,6 @@ def test_commands():
         except ValueError:
             return True
 
-    _, preview = ui.build_command("sort_preview", lib, {})
-    check("--no-move" in preview and "-y" not in preview and "--move-to" not in preview, "Sort: preview moves nothing (--no-move, no -y)")
-    check("--report" in preview, "...and writes a report")
-    check(refused("sort", {}) and refused("sort", {"confirm": "yes"}) and refused("sort", {"confirm": 1}),
-          "Sort refuses unless confirm is exactly true")
-    _, sort = ui.build_command("sort", lib, {"confirm": True})
-    check("-y" in sort and sort[sort.index("--move-to") + 1] == lib and "--no-update-check" in sort,
-          "Sort moves inside the chosen folder only, after confirmation, offline")
-    _, photos = ui.build_command("sort_preview", lib, {"detect_photos": True})
-    check("--detect-photos" in photos, "the photo option is passed through")
-
-    check(refused("undo", {"manifest": "fgu_moves_2026-01-01_000000.jsonl"}), "Undo refuses without the tick box")
-    check(refused("undo", {"manifest": "fgu_moves_2026-01-01_000000.jsonl", "confirm": True}), "Undo refuses a file that isn't in the folder")
-    check(refused("undo", {"manifest": "../fgu_moves_2026-01-01_000000.jsonl", "confirm": True})
-          and refused("undo", {"manifest": "other.jsonl", "confirm": True}), "Undo refuses paths and names that aren't undo files")
-    with open(os.path.join(lib, "fgu_moves_2026-01-01_000000.jsonl"), "w") as f:
-        f.write("")
-    try:
-        _, undo = ui.build_command("undo", lib, {"manifest": "fgu_moves_2026-01-01_000000.jsonl", "confirm": True})
-        check("--undo" in undo and "-y" in undo, "Undo with a real undo file and the tick box runs --undo")
-    finally:
-        os.remove(os.path.join(lib, "fgu_moves_2026-01-01_000000.jsonl"))
-
     _, check_cmd = ui.build_command("check", None, {})
     check_ok = "--no-color" in check_cmd and check_cmd[check_cmd.index("--top") + 1] == "25" and "--campaign" not in check_cmd
     check_ok = check_ok and os.path.basename(check_cmd[1]) == "fgu_support_maptest.py"
@@ -371,7 +348,7 @@ def test_jobs(server):
 
 
 def test_real_buttons(server, lib, originals):
-    print("\n[end to end] Index, Search, Sort preview, Sort and Undo, through the page's own API")
+    print("\n[end to end] Index and Search, through the page's own API")
     client = Client(server)
     client.sign_in()
     q = urllib.parse.urlencode
@@ -392,41 +369,10 @@ def test_real_buttons(server, lib, originals):
     job = client.wait_for_job()
     check(job["status"] == "done" and len(job.get("results") or []) == 1,
           f"a description that starts with '--' still searches ({job['status']})")
-
-    # Sort preview: moves nothing, writes a report.
-    status, _ = client.json("POST", "/api/run", {"action": "sort_preview", "lib": lib, "options": {}})
-    job = client.wait_for_job()
-    reports = [f for f in all_files(lib) if f.startswith("fgu_report_") and f.endswith(".csv")]
-    check(job["status"] == "done" and len(reports) == 1, f"Sort preview finished and wrote one report ({job['status']}, {reports})")
     check(all(read_bytes(os.path.join(lib, rel)) == b for rel, b in originals.items()), "...and every map is still where it was, unchanged")
 
-    # Sort for real: needs the tick box.
-    status, reply = client.json("POST", "/api/run", {"action": "sort", "lib": lib, "options": {}})
-    check(status == 400 and sorted(f for f in all_files(lib) if "/" not in f and f.endswith(".png")) == sorted(originals),
-          f"Sort without the tick box is refused and nothing moves (got {status})")
-    status, _ = client.json("POST", "/api/run", {"action": "sort", "lib": lib, "options": {"confirm": True}})
-    job = client.wait_for_job()
-    left_in_place = [rel for rel in originals if os.path.exists(os.path.join(lib, rel))]
-    manifests = [f for f in all_files(lib) if f.startswith("fgu_moves_")]
-    check(job["status"] == "done" and len(manifests) == 1, f"Sort finished and saved an undo file ({job['status']}, {manifests})")
-    check(len(left_in_place) < len(originals), "...and the maps moved into category folders")
-    moved_files = [f for f in all_files(lib) if f.endswith(".png") and "/" in f and ui.INDEX_DIRNAME not in f]
-    check(len(moved_files) == len(originals), f"...all of them, none lost or duplicated ({len(moved_files)} of {len(originals)})")
-
-    status, s = client.json("GET", "/api/status?" + q({"lib": lib}))
-    check(s["library"]["undo_files"] == manifests, "the status offers that undo file")
-    status, _ = client.json("POST", "/api/run", {"action": "undo", "lib": lib, "options": {"manifest": manifests[0]}})
-    check(status == 400, f"Undo without the tick box is refused (got {status})")
-    status, _ = client.json("POST", "/api/run", {"action": "undo", "lib": lib, "options": {"manifest": manifests[0], "confirm": True}})
-    job = client.wait_for_job()
-    check(job["status"] == "done", f"Undo finished ({job['status']})")
-    check(all(read_bytes(os.path.join(lib, rel)) == b for rel, b in originals.items() if os.path.exists(os.path.join(lib, rel))),
-          "every map is back, byte for byte")
-    check(all(os.path.exists(os.path.join(lib, rel)) for rel in originals), "...at its original place")
-
-
 def test_other_tools(server, lib, camp, originals):
-    print("\n[other tools] Sort and Grids work on any one folder; Check reads a campaign")
+    print("\n[other tools] Grids works on any one folder; Check reads a campaign")
     client = Client(server)
     client.sign_in()
     sub = os.path.join(lib, "sub")
@@ -442,11 +388,6 @@ def test_other_tools(server, lib, camp, originals):
     for bad in ("sub", "", os.path.join(lib, "no_such_folder"), os.path.join(lib, "top.png")):
         status, reply = client.json("POST", "/api/run", {"action": "grid", "lib": "", "options": {"folder": bad}})
         check(status == 400, f"Grids refuses the folder {bad!r} (got {status})")
-    status, _ = client.json("POST", "/api/run", {"action": "sort", "lib": "", "options": {"folder": sub}})
-    check(status == 400 and "sub/moved" not in all_files(lib), f"Sort on a chosen folder still needs the tick box (got {status})")
-    status, s_ = client.json("GET", "/api/status?" + urllib.parse.urlencode({"lib": sub}))
-    check(status == 200 and s_["library"]["top_level_images"] == 1, "the sort box can ask about a sub-folder: 1 map directly inside it")
-
     # Check: the read-only map-load report on a campaign.
     status, _ = client.json("POST", "/api/run", {"action": "check", "options": {"campaign": camp, "top": 5}})
     job = client.wait_for_job()
@@ -511,19 +452,6 @@ def test_hostile_index(server, tmp):
     check(not any(r.startswith(("..", "/")) or r.endswith(".bat") for r in listed), "...none of them outside the library or a program")
 
 
-def test_forged_undo_through_the_window(server, lib, manifest, payload):
-    print("\n[forged undo] the Undo button won't use an undo file this installation didn't sign")
-    client = Client(server)
-    client.sign_in()
-    name = os.path.basename(manifest)
-    status, _ = client.json("POST", "/api/run", {"action": "undo", "lib": "", "options": {"folder": lib, "manifest": name, "confirm": True}})
-    job = client.wait_for_job()
-    log = "\n".join(client.json("GET", "/api/job?since=0")[1]["lines"])
-    check(status == 200 and job["status"] == "failed", f"the job is reported as failed ({job['status']})")
-    check("NOT used" in log, "...and the log says why")
-    check(os.path.exists(payload), "...and nothing was moved")
-
-
 def test_localhost_only(server):
     print("\n[network] the window answers only on this computer")
     check(server.server_address[0] == "127.0.0.1", f"it is bound to 127.0.0.1 only (bound to {server.server_address[0]})")
@@ -568,13 +496,6 @@ def main():
             make_grid_png(os.path.join(tools_lib, "top.png"))
             make_grid_png(os.path.join(tools_lib, "sub", "inner.png"))
             tools_originals = {rel: read_bytes(os.path.join(tools_lib, *rel.split("/"))) for rel in all_files(tools_lib)}
-            forged_payload = os.path.join(tools_lib, "payload.txt")
-            forged_manifest = os.path.join(tools_lib, "fgu_moves_2026-01-01_000000.jsonl")
-            with open(forged_payload, "w") as f:
-                f.write("shipped in a pack")
-            with open(forged_manifest, "w") as f:
-                f.write(json.dumps({"from": os.path.join(tmp, "elsewhere", "evil.plist"), "to": forged_payload, "sidecar": False}) + "\n")
-            tools_originals = {rel: read_bytes(os.path.join(tools_lib, *rel.split("/"))) for rel in all_files(tools_lib)}
             campaign = os.path.join(tmp, "campaign")
             os.makedirs(campaign)
             with open(os.path.join(campaign, "db.xml"), "w") as f:
@@ -582,7 +503,6 @@ def main():
             with WriteRecorder() as recorder:
                 test_real_buttons(server, lib, originals)
                 test_other_tools(server, tools_lib, campaign, tools_originals)
-                test_forged_undo_through_the_window(server, tools_lib, forged_manifest, forged_payload)
             check(recorder.touched == [], f"fgu_ui.py itself wrote nothing (wrote: {recorder.touched})")
     finally:
         server.shutdown()

@@ -65,8 +65,7 @@ def _sidecar_path(image_path):
     """FGU sidecar path for image_path: same directory and base filename, with the
     image's own extension replaced by .xml (map.png -> map.xml) -- NOT map.png.xml.
     Matches the convention fgu_support_maptest.py's scan_sidecars() and the uvtt2fgu
-    reference tool both expect. Duplicated from fgu_classify_maps.py so the two scripts
-    stay independent rather than sharing a module."""
+    reference tool both expect."""
     return os.path.splitext(image_path)[0] + ".xml"
 
 def _axis_profiles(gray):
@@ -254,8 +253,7 @@ def run_grid_detection(image_paths, force=False, min_grid_px=20, max_grid_fracti
 
 def _scan_local_dir(folder):
     """[(path, None, None), ...] for supported image files under folder, recursing
-    into subdirectories so maps sorted into category folders by fgu_classify_maps.py
-    are still found."""
+    into subdirectories so maps kept in category folders are still found."""
     paths = []
     for root, _, files in os.walk(folder):
         for file in files:
